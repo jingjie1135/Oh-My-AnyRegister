@@ -485,8 +485,8 @@ class AdobeBrowserRegister:
                         all_cookies = self.page.cookies()
 
                 # 6c. 仅保留 Adobe 相关域名下的 Cookie (与浏览器插件提取范围一致)
-                adobe_domains = ('.adobe.com', 'firefly.adobe.com', 'account.adobe.com',
-                                 'auth.services.adobe.com', '.adobelogin.com')
+                adobe_domains = ('adobe.com', 'firefly.adobe.com', 'account.adobe.com',
+                                 'auth.services.adobe.com', 'adobelogin.com')
                 filtered = []
                 seen_keys = set()
 
@@ -504,8 +504,9 @@ class AdobeBrowserRegister:
                     if not name:
                         continue
 
-                    # 检查域名是否属于 Adobe 体系
-                    is_adobe = any(domain == d or domain.endswith(d) for d in adobe_domains)
+                    # 检查域名是否属于 Adobe 体系 (去除前导点的影响)
+                    clean_domain = domain.lstrip('.')
+                    is_adobe = any(clean_domain == d or clean_domain.endswith('.' + d) for d in adobe_domains)
                     if not is_adobe:
                         continue
 
