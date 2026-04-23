@@ -376,15 +376,150 @@ class AdobeBrowserRegister:
                     if not code_found:
                         self.log("⚠️ 验证码获取超时。账号可能仍算作创建。")
 
+            # ============ 6. Firefly OAuth 授权 + 全域 Cookie 提取 ============
             cookie_str = ""
             try:
-                cookies_list = self.page.cookies()
-                if isinstance(cookies_list, dict):
-                    cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_list.items()])
-                else:
-                    cookie_str = "; ".join([f"{c.get('name', '')}={c.get('value', '')}" for c in cookies_list if isinstance(c, dict)])
-                self.log(f"🍪 成功从浏览器提取到 Session Cookie (长度: {len(cookie_str)})")
-                
+                # 6a. 导航到 Firefly 主页，完成完整的 OAuth consent 授权链路
+                # 这一步是决定 Token 有效期（1h vs 24h）的关键！
+                # 只有完成了 firefly.adobe.com 的 OAuth 授权流程，Cookie 中才会
+                # 包含 firefly_api scope 的 consent 标记，Adobe IMS 才会签发 24h Token
+                self.log("[Adobe] 6. 导航到 Firefly 主页完成 OAuth 授权...")
+                try:
+                    # 构造与浏览器插件完全一致的 Firefly 入口 URL（包含完整scope）
+                    firefly_auth_url = (
+                        "https://auth.services.adobe.com/zh_HANS/deeplink.html"
+                        "?deeplink=ssofirst"
+                        "&callback=https://firefly.adobe.com/"
+                        "&client_id=clio-playground-web"
+                        "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,"
+                        "additional_info.projectedProductContext,"
+                        "additional_info.ownerOrg,uds_read,uds_write,ab.manage,"
+                        "read_organizations,additional_info.roles,"
+                        "account_cluster.read,creative_production"
+                    )
+                    self.page.get(firefly_auth_url)
+                    self._wait_page_ready(20)
+                    self._delay(3, 5)
+
+                    # 等待 OAuth consent 重定向并处理可能的授权弹窗
+                    max_consent_wait = 30
+                    consent_start = time.time()
+                    while time.time() - consent_start < max_consent_wait:
+                        current_url = self.page.url or ""
+
+                        # 如果已经成功跳转到 firefly.adobe.com，说明授权完成
+                        if "firefly.adobe.com" in current_url and "auth.services" not in current_url:
+                            self.log("✅ Firefly OAuth 授权跳转完成!")
+                            break
+
+                        # 检查是否出现了 consent（授权同意）页面
+                        consent_btn = None
+                        for sel in ['button:contains("允许")', 'button:contains("Allow")',
+                                     'button:contains("同意")', 'button:contains("Agree")',
+                                     'button:contains("Accept")', 'button:contains("接受")']:
+                            try:
+                                consent_btn = self.page.ele(sel, timeout=1)
+                                if consent_btn and consent_btn.states.is_displayed:
+                                    break
+                                consent_btn = None
+                            except Exception:
+                                consent_btn = None
+
+                        if consent_btn:
+                            self.log("🔑 检测到 OAuth 授权同意页面，正在点击同意...")
+                            try:
+                                consent_btn.click()
+                                self._delay(2, 3)
+                            except Exception:
+                                pass
+
+                        # 检测是否需要接受 Firefly Terms of Service
+                        tos_texts = ['服务条款', 'Terms of Service', 'Terms of Use',
+                                     'I agree', '我同意', 'Get started', '开始使用']
+                        for txt in tos_texts:
+                            try:
+                                tos_ele = self.page.ele(f'text:{txt}', timeout=1)
+                                if tos_ele and tos_ele.states.is_displayed:
+                                    tag = tos_ele.tag.lower()
+                                    if tag in ('button', 'a', 'span', 'label', 'input'):
+                                        self.log(f"📋 检测到服务条款确认: '{txt}'，正在点击...")
+                                        tos_ele.click()
+                                        self._delay(2, 3)
+                                        break
+                            except Exception:
+                                continue
+
+                        time.sleep(2)
+
+                    # 确保最终停留在 firefly.adobe.com 上
+                    final_url = self.page.url or ""
+                    if "firefly.adobe.com" not in final_url:
+                        self.log("[Adobe] 6a-retry. 直接导航到 Firefly 首页...")
+                        self.page.get("https://firefly.adobe.com/")
+                        self._wait_page_ready(15)
+                        self._delay(3, 5)
+
+                    self.log(f"[Adobe] 6a. 当前页面: {self.page.url}")
+
+                except Exception as nav_err:
+                    self.log(f"⚠️ Firefly OAuth 授权流程异常 (尝试直接导航): {nav_err}")
+                    try:
+                        self.page.get("https://firefly.adobe.com/")
+                        self._wait_page_ready(15)
+                        self._delay(3, 5)
+                    except Exception:
+                        pass
+
+                # 6b. 使用 all_domains=True 提取浏览器内全部域名的 Cookie
+                # 这与 browser-cookie-exporter 插件使用 chrome.cookies.getAll() 的行为一致
+                self.log("[Adobe] 6b. 提取全域 Cookie...")
+                all_cookies = []
+                try:
+                    all_cookies = self.page.cookies(all_domains=True)
+                except TypeError:
+                    # 兼容旧版 DrissionPage 不支持 all_domains 参数
+                    try:
+                        cdp_result = self.page.run_cdp('Network.getAllCookies')
+                        all_cookies = cdp_result.get('cookies', [])
+                    except Exception:
+                        all_cookies = self.page.cookies()
+
+                # 6c. 仅保留 Adobe 相关域名下的 Cookie (与浏览器插件提取范围一致)
+                adobe_domains = ('.adobe.com', 'firefly.adobe.com', 'account.adobe.com',
+                                 'auth.services.adobe.com', '.adobelogin.com')
+                filtered = []
+                seen_keys = set()
+
+                for c in all_cookies:
+                    if isinstance(c, dict):
+                        domain = str(c.get('domain', '')).lower().strip()
+                        name = str(c.get('name', '')).strip()
+                        value = str(c.get('value', '')).strip()
+                    else:
+                        # 兼容某些版本返回 Cookie 对象
+                        domain = str(getattr(c, 'domain', '')).lower().strip()
+                        name = str(getattr(c, 'name', '')).strip()
+                        value = str(getattr(c, 'value', '')).strip()
+
+                    if not name:
+                        continue
+
+                    # 检查域名是否属于 Adobe 体系
+                    is_adobe = any(domain == d or domain.endswith(d) for d in adobe_domains)
+                    if not is_adobe:
+                        continue
+
+                    # 去重 (与浏览器插件的 seen Set 逻辑一致)
+                    dedup_key = f"{domain}|{name}"
+                    if dedup_key in seen_keys:
+                        continue
+                    seen_keys.add(dedup_key)
+                    filtered.append(f"{name}={value}")
+
+                cookie_str = "; ".join(filtered)
+                self.log(f"🍪 成功提取全域 Cookie (共 {len(filtered)} 条, 长度: {len(cookie_str)})")
+
+                # 6d. 自动推送至 adobe2api (保留原有逻辑)
                 if cookie_str:
                     import requests
                     import os
@@ -426,7 +561,7 @@ class AdobeBrowserRegister:
             return {
                 "email": email,
                 "password": password,
-                "token": cookie_str,  # 将 Cookie 填充至 Token 字段展示
+                "token": cookie_str,  # 将完整 Cookie 填充至 Token 字段展示
                 "extra": {"created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
             }
 
