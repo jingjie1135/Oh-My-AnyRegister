@@ -1433,6 +1433,82 @@ function ImportModal({ platform, onClose, onDone }: { platform: string; onClose:
   )
 }
 
+// ── 批量下发弹框 ──────────────────────────────────────────────
+function BatchUploadModal({ selectedIds, onClose, onDone }: { selectedIds: number[]; onClose: () => void; onDone: () => void }) {
+  const [channels, setChannels] = useState<any[]>([])
+  const [channelId, setChannelId] = useState<number | ''>('')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<any>(null)
+
+  useEffect(() => {
+    apiFetch('/upload-channels?enabled_only=true').then(data => {
+      setChannels(data)
+      if (data.length > 0) setChannelId(data[0].id)
+    }).catch(console.error)
+  }, [])
+
+  const submit = async () => {
+    if (!channelId) return
+    setLoading(true)
+    try {
+      const res = await apiFetch('/upload-channels/batch', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: selectedIds, channel_id: channelId })
+      })
+      setResult(res)
+    } catch (e: any) {
+      window.alert(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className="dialog-panel dialog-panel-sm p-6" onClick={e => e.stopPropagation()}>
+        <h2 className="text-base font-semibold text-[var(--text-primary)] mb-4">批量下发已选账号 ({selectedIds.length})</h2>
+        {result ? (
+          <div className="space-y-4">
+            <div className="text-sm font-medium">
+              <span className="text-emerald-400 mr-3">成功: {result.success_count}</span>
+              <span className="text-red-400 mr-3">失败: {result.failed_count}</span>
+              <span className="text-[var(--text-muted)]">跳过: {result.skipped_count}</span>
+            </div>
+            <div className="max-h-60 overflow-y-auto text-xs bg-[calc(var(--bg-hover)*0.5)] p-3 rounded-lg space-y-1.5 border border-[var(--border)]">
+              {result.details?.map((d: any, i: number) => (
+                <div key={i} className={d.success ? 'text-emerald-400' : 'text-red-400'}>
+                  <div className="font-mono text-[10px] opacity-70">{d.email}</div>
+                  <div>{d.success ? d.message : d.error}</div>
+                </div>
+              ))}
+            </div>
+            <Button onClick={onDone} className="w-full">完成</Button>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div>
+              <label className="text-xs text-[var(--text-muted)] block mb-1.5">选择上传目标</label>
+              <select value={channelId} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : '')}
+                className="control-surface appearance-none w-full">
+                <option value="">-- 请选择下发频道 --</option>
+                {channels.map((ch: any) => (
+                  <option key={ch.id} value={ch.id}>[{ch.channel_type}] {ch.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={submit} disabled={loading || !channelId} className="flex-1">
+                {loading ? '下发中...' : '开始下发'}
+              </Button>
+              <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ExportMenu({
   platform,
   total,
@@ -1559,6 +1635,7 @@ export default function Accounts() {
   const [filterStatus, setFilterStatus] = useState('')
   const [detail, setDetail] = useState<any | null>(null)
   const [showImport, setShowImport] = useState(false)
+  const [showBatchUpload, setShowBatchUpload] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
@@ -1662,6 +1739,7 @@ export default function Accounts() {
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
+      {showBatchUpload && selectedCount > 0 && <BatchUploadModal selectedIds={[...selectedIds]} onClose={() => setShowBatchUpload(false)} onDone={() => { setShowBatchUpload(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
@@ -1693,6 +1771,10 @@ export default function Accounts() {
               <Button size="sm" variant="outline" onClick={() => setShowImport(true)}>
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 导入
+              </Button>
+              <Button size="sm" variant="outline" disabled={selectedCount === 0} onClick={() => setShowBatchUpload(true)}>
+                <Upload className="mr-1.5 h-3.5 w-3.5" />
+                批量下发{selectedCount > 0 ? `(${selectedCount})` : ''}
               </Button>
               {tab === 'chatgpt' ? (
                 <ExportMenu
