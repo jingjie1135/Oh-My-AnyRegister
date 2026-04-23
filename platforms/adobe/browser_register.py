@@ -490,6 +490,43 @@ class AdobeBrowserRegister:
                     except Exception:
                         pass
 
+                # 6a-ims. 主动触发 IMS session 建立以获取 ims_sid cookie
+                # ims_sid 是由 adobeid-na1.services.adobe.com / ims-na1.adobelogin.com 设置的
+                # HttpOnly cookie，只有浏览器实际访问这些域时才会被设置。
+                # 没有 ims_sid 的 Cookie 在做 token refresh 时只能拿到 1h 有效期。
+                try:
+                    self.log("[Adobe] 6a-ims. 触发 IMS session 建立...")
+                    # 使用 JavaScript 发送一个 XHR 到 IMS token check 端点（与 Firefly 前端运行时行为一致）
+                    # 这会让浏览器自动在 .adobelogin.com 域上带上并建立 session cookie
+                    ims_js = """
+                    (async () => {
+                        try {
+                            const formData = new URLSearchParams({
+                                client_id: 'clio-playground-web',
+                                scope: 'AdobeID,firefly_api,openid,pps.read,pps.write,additional_info.projectedProductContext,additional_info.ownerOrg,uds_read,uds_write,ab.manage,read_organizations,additional_info.roles,account_cluster.read,creative_production',
+                                guest_allowed: 'true'
+                            });
+                            const resp = await fetch('https://adobeid-na1.services.adobe.com/ims/check/v6/token?jslVersion=v2-v0.48.0-1-g1e322cb', {
+                                method: 'POST',
+                                body: formData,
+                                credentials: 'include',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                                    'Accept': '*/*'
+                                }
+                            });
+                            return resp.status + ':' + resp.statusText;
+                        } catch(e) {
+                            return 'err:' + e.message;
+                        }
+                    })()
+                    """
+                    ims_result = self.page.run_js(ims_js, timeout=15)
+                    self.log(f"[Adobe] IMS token check 响应: {ims_result}")
+                    self._delay(2, 3)
+                except Exception as ims_err:
+                    self.log(f"⚠️ IMS session 触发异常: {ims_err}")
+
                 # 6b. 使用 CDP Network.getAllCookies 提取浏览器内全部域名的 Cookie
                 # 关键：page.cookies() 可能不返回 HttpOnly Cookie (如 ims_sid)
                 # 而 CDP Network.getAllCookies 等同于 chrome.cookies.getAll()，能获取全部 Cookie

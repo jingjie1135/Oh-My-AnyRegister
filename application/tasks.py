@@ -497,8 +497,9 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
         task_logger.log(f"  [CPA] 自动上传异常: {exc}", level="warning")
 
 
-def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id: int) -> None:
-    if not channel_id:
+def _auto_push_to_selected_channel(task_logger: TaskLogger, account_db_id: int, channel_id: int) -> None:
+    """根据数据库账号 ID 和渠道 ID 执行定向分发"""
+    if not channel_id or not account_db_id:
         return
     try:
         from infrastructure.upload_channels_repository import UploadChannelsRepository
@@ -512,9 +513,9 @@ def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id:
             return
 
         acc_repo = AccountsRepository()
-        account_record = acc_repo.get(account.id)
+        account_record = acc_repo.get(account_db_id)
         if not account_record:
-            task_logger.log(f"  [定向分发] 无法获取账号详情 (ID: {account.id})", level="warning")
+            task_logger.log(f"  [定向分发] 无法获取账号详情 (DB ID: {account_db_id})", level="warning")
             return
 
         driver = get_uploader(channel.channel_type)
@@ -738,7 +739,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if resolved_proxy:
                 logger.log(f"使用代理: {resolved_proxy}")
             account = platform.register(email=email, password=password)
-            save_account(account)
+            db_model = save_account(account)
             if resolved_proxy:
                 proxy_pool.report_success(resolved_proxy)
             logger.record_success()
@@ -748,9 +749,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             _auto_push_any2api(logger, account)
             
             auto_upload_channel_id = extra.get("auto_upload_channel_id")
-            if auto_upload_channel_id:
+            if auto_upload_channel_id and db_model and db_model.id:
                 try:
-                    _auto_push_to_selected_channel(logger, account, int(auto_upload_channel_id))
+                    _auto_push_to_selected_channel(logger, int(db_model.id), int(auto_upload_channel_id))
                 except Exception as upload_err:
                     logger.log(f"  [自动下发异常] {upload_err}", level="warning")
 
