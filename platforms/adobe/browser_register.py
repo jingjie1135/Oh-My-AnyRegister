@@ -529,6 +529,10 @@ class AdobeBrowserRegister:
                                 email_field = self.page.ele('#EmailPage-EmailField', timeout=1) or self.page.ele('#EmailForm-email', timeout=0.5)
                                 if email_field and email_field.states.is_displayed:
                                     self.log("[Adobe] IMS 拦截: 遇到邮箱输入要求...")
+                                    try:
+                                        self.page.get_screenshot(path='logs/intercept_email.png', full_page=True)
+                                    except Exception:
+                                        pass
                                     email_field.clear()
                                     self._safe_type(email_field, email)
                                     self._delay(0.5, 1)
@@ -542,6 +546,10 @@ class AdobeBrowserRegister:
                                 pwd_field = self.page.ele('#PasswordPage-PasswordField', timeout=1) or self.page.ele('input[type="password"]', timeout=0.5)
                                 if pwd_field and pwd_field.states.is_displayed:
                                     self.log("[Adobe] IMS 拦截: 遇到密码输入要求...")
+                                    try:
+                                        self.page.get_screenshot(path='logs/intercept_pwd.png', full_page=True)
+                                    except Exception:
+                                        pass
                                     pwd_field.clear()
                                     self._safe_type(pwd_field, password)
                                     self._delay(0.5, 1)
