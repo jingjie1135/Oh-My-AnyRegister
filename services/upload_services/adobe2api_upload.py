@@ -15,26 +15,28 @@ class Adobe2ApiUploader(BaseUploader):
         if not channel.api_url:
             return False, "API URL 不能为空"
         if not channel.api_key:
-            return False, "API Key 不能为空"
+            return False, "密码/API Key 不能为空"
 
-        url = channel.api_url.rstrip("/") + "/api/v1/admin/profiles"
-        headers = {"Authorization": f"Bearer {channel.api_key}"}
+        url = channel.api_url.rstrip("/") + "/api/v1/auth/login"
+        payload = {
+            "username": "admin",
+            "password": channel.api_key
+        }
 
         try:
-            resp = cffi_requests.get(
-                url,
-                headers=headers,
-                proxies=None,
-                timeout=10,
-                impersonate="chrome110",
-            )
-            if resp.status_code in (200, 204, 405):
-                return True, "Adobe2API 连接测试成功"
-            if resp.status_code == 401:
-                return False, "连接成功，但 API Key 无效"
-            if resp.status_code == 403:
-                return False, "连接成功，但权限不足"
-            return False, f"服务器返回异常状态码: {resp.status_code}"
+            with cffi_requests.Session() as s:
+                resp = s.post(
+                    url,
+                    json=payload,
+                    proxies=None,
+                    timeout=10,
+                    impersonate="chrome110",
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("status") == "ok":
+                        return True, "Adobe2API 连接及鉴权测试成功"
+                return False, "管理员密码错误或连接被拒绝"
         except cffi_requests.exceptions.ConnectionError as e:
             return False, f"无法连接到服务器: {str(e)}"
         except cffi_requests.exceptions.Timeout:
@@ -60,7 +62,13 @@ class Adobe2ApiUploader(BaseUploader):
         for account in accounts:
             try:
                 # 尝试从凭据池中拿到 cookie
-                ck_cred = next((c for c in account.credentials if c.get("credential_type") == "cookie"), None)
+                ck_cred = None
+                for c in account.credentials:
+                    key_name = str(c.get("key") or "").lower()
+                    if key_name in ("cookie", "cookies", "legacy_token", "session_token"):
+                        ck_cred = c
+                        break
+                
                 if not ck_cred:
                     results["skipped_count"] += 1
                     results["details"].append(
@@ -85,47 +93,72 @@ class Adobe2ApiUploader(BaseUploader):
         if not valid_accounts:
             return results
 
-        # 考虑到 Adobe2API 的 batch 接口可能叫做 /api/v1/refresh-profiles/import-cookie/batch ，如果不存在则逐个导入
+        url_login = channel.api_url.rstrip("/") + "/api/v1/auth/login"
         url_single = channel.api_url.rstrip("/") + "/api/v1/refresh-profiles/import-cookie"
-        headers = {
-            "Authorization": f"Bearer {channel.api_key}",
-            "Content-Type": "application/json",
-        }
 
-        for item, acc in zip(batch_items, valid_accounts):
-            payload = {
-                "cookie": item["cookie"],
-                "name": item["name"]
+        try:
+            s = cffi_requests.Session()
+            login_resp = s.post(
+                url_login,
+                json={"username": "admin", "password": channel.api_key},
+                timeout=10,
+                impersonate="chrome110"
+            )
+            if login_resp.status_code != 200 or login_resp.json().get("status") != "ok":
+                results["failed_count"] += len(valid_accounts)
+                results["details"].append({"id": 0, "email": "ALL", "success": False, "error": "后台登录鉴权失效"})
+                return results
+                
+            headers = {
+                "Content-Type": "application/json",
             }
-            try:
-                resp = cffi_requests.post(
-                    url_single,
-                    headers=headers,
-                    json=payload,
-                    proxies=None,
-                    timeout=30,
-                    impersonate="chrome110",
-                )
-                if resp.status_code in (200, 201):
-                    results["success_count"] += 1
-                    results["details"].append(
-                        {"id": acc.id, "email": acc.email, "success": True, "message": "Cookie上传并刷新成功"}
+            
+            for item, acc in zip(batch_items, valid_accounts):
+                payload = {
+                    "cookie": item["cookie"],
+                    "name": item["name"]
+                }
+                try:
+                    resp = s.post(
+                        url_single,
+                        headers=headers,
+                        json=payload,
+                        proxies=None,
+                        timeout=30,
                     )
-                else:
-                    error_msg = f"HTTP {resp.status_code}"
-                    try:
-                        detail = resp.json()
-                        error_msg = detail.get("error", detail.get("detail", error_msg)) if isinstance(detail, dict) else error_msg
-                    except Exception:
-                        pass
+                    if resp.status_code in (200, 201):
+                        resp_data = resp.json()
+                        if resp_data.get("status") == "partial" or resp_data.get("refresh_error"):
+                            err = resp_data.get("refresh_error") or "后端刷新失败"
+                            results["failed_count"] += 1
+                            results["details"].append(
+                                {"id": acc.id, "email": acc.email, "success": False, "error": f"入库成功但刷新鉴权失败: {err}"}
+                            )
+                        else:
+                            results["success_count"] += 1
+                            results["details"].append(
+                                {"id": acc.id, "email": acc.email, "success": True, "message": "Cookie上传并刷新成功"}
+                            )
+                    else:
+                        error_msg = f"HTTP {resp.status_code}"
+                        try:
+                            detail = resp.json()
+                            error_msg = detail.get("error", detail.get("detail", error_msg)) if isinstance(detail, dict) else error_msg
+                        except Exception:
+                            pass
+                        results["failed_count"] += 1
+                        results["details"].append(
+                            {"id": acc.id, "email": acc.email, "success": False, "error": error_msg}
+                        )
+                except Exception as e:
                     results["failed_count"] += 1
                     results["details"].append(
-                        {"id": acc.id, "email": acc.email, "success": False, "error": error_msg}
+                        {"id": acc.id, "email": acc.email, "success": False, "error": str(e)}
                     )
-            except Exception as e:
-                results["failed_count"] += 1
-                results["details"].append(
-                    {"id": acc.id, "email": acc.email, "success": False, "error": str(e)}
-                )
+        except Exception as exc:
+            results["failed_count"] += len(valid_accounts)
+            results["details"].append(
+                {"id": 0, "email": "ALL", "success": False, "error": f"批量下发会话异常: {str(exc)}"}
+            )
 
         return results

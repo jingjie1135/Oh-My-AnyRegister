@@ -497,6 +497,48 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
         task_logger.log(f"  [CPA] 自动上传异常: {exc}", level="warning")
 
 
+def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id: int) -> None:
+    if not channel_id:
+        return
+    try:
+        from sqlmodel import Session
+        from core.db import engine
+        from infrastructure.upload_channels_repository import UploadChannelsRepository
+        import services.upload_services as upload_services
+        
+        with Session(engine) as session:
+            repo = UploadChannelsRepository(session)
+            channel = repo.get_channel(channel_id)
+            if not channel or not channel.is_enabled:
+                task_logger.log(f"  [定向分发] 目标通道失效或不存在 (ID: {channel_id})", level="warning")
+                return
+
+        driver = upload_services.get_upload_driver(channel.channel_type, channel.api_url, channel.api_key)
+        
+        extra = dict(account.extra or {})
+        ac_dict = {
+            "account_id": str(getattr(account, "user_id", "") or getattr(account, "email", "") or ""),
+            "email": str(getattr(account, "email", "") or ""),
+            "password": str(getattr(account, "password", "") or ""),
+            "cookie": str(extra.get("cookies", "") or ""),
+            "token": str(getattr(account, "token", "") or extra.get("access_token", "") or ""),
+        }
+        res = driver.push_accounts([ac_dict])
+        
+        msg_parts = []
+        if res.success_count:
+            msg_parts.append(f"推送成功 {res.success_count} 个")
+        if res.failed_count:
+            msg_parts.append(f"失败 {res.failed_count} 个")
+        msg = ", ".join(msg_parts) or "无推送结果反馈"
+        task_logger.log(f"  [{channel.name} 投递] {msg}")
+        for err in res.errors:
+            task_logger.log(f"  -> {err}", level="warning")
+            
+    except Exception as exc:
+        task_logger.log(f"  [定向分发异常] {exc}", level="error")
+
+
 def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None, shared_mailbox=None):
     from core.base_identity import normalize_identity_provider
     from core.base_mailbox import create_mailbox
@@ -705,9 +747,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             _save_task_log(platform_name, account.email, "success")
             _auto_upload_cpa(logger, account)
             _auto_push_any2api(logger, account)
-            extra = dict(account.extra or {})
-            overview = dict(extra.get("account_overview") or {})
-            cashier_url = str(extra.get("cashier_url") or overview.get("cashier_url") or "")
+            
+            auto_upload_channel_id = extra.get("auto_upload_channel_id")
+            if auto_upload_channel_id:
+                try:
+                    _auto_push_to_selected_channel(logger, account, int(auto_upload_channel_id))
+                except Exception as upload_err:
+                    logger.log(f"  [自动下发异常] {upload_err}", level="warning")
+
+            extra_mutable = dict(account.extra or {})
+            overview = dict(extra_mutable.get("account_overview") or {})
+            cashier_url = str(extra_mutable.get("cashier_url") or overview.get("cashier_url") or "")
             if cashier_url:
                 logger.log(f"  [升级链接] {cashier_url}")
                 logger.add_cashier_url(cashier_url)

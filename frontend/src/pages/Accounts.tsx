@@ -205,6 +205,8 @@ function RegisterModal({
   const [taskId, setTaskId] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [starting, setStarting] = useState(false)
+  const [channels, setChannels] = useState<any[]>([])
+  const [autoUploadId, setAutoUploadId] = useState<number | ''>('')
 
   const supportedExecutors: string[] = platformMeta?.supported_executors || []
   const registrationOptions = buildRegistrationOptions(platformMeta)
@@ -226,12 +228,16 @@ function RegisterModal({
     Promise.all([
       getConfig().catch(() => ({})),
       getConfigOptions().catch(() => null),
+      apiFetch('/upload-channels').catch(() => [])
     ])
-      .then(([cfg, options]) => {
+      .then(([cfg, options, chs]) => {
         if (!active) return
         setConfig(cfg || {})
         if (options) {
           setConfigOptions(options)
+        }
+        if (chs) {
+          setChannels(chs || [])
         }
       })
       .catch(() => {
@@ -325,6 +331,9 @@ function RegisterModal({
         oauth_email_hint: cfg.oauth_email_hint,
         chrome_user_data_dir: cfg.chrome_user_data_dir,
         chrome_cdp_url: cfg.chrome_cdp_url,
+      }
+      if (autoUploadId) {
+        extra.auto_upload_channel_id = autoUploadId
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -443,6 +452,17 @@ function RegisterModal({
                       onChange={e => setConcurrency(Number(e.target.value))}
                       className="control-surface control-surface-compact text-center" />
                   </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-[var(--text-muted)] block mb-1">注册成功后自动下发推送到 (可选)</label>
+                  <select value={autoUploadId} onChange={e => setAutoUploadId(e.target.value ? Number(e.target.value) : '')}
+                    className="control-surface appearance-none w-full">
+                    <option value="">-- 仅注册入库，暂不发送 --</option>
+                    {channels.map((ch: any) => (
+                      <option key={ch.id} value={ch.id}>[{ch.channel_type}] {ch.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">

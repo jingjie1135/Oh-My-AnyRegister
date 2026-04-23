@@ -112,7 +112,7 @@ def batch_upload_accounts(channel_id: int, req: BatchUploadRequest):
     accounts = []
     # 这里我们简化，AccountRepository 默认能 get_by_id
     for acc_id in req.account_ids:
-        acc = account_repo.get_by_id(acc_id)
+        acc = account_repo.get(acc_id)
         if acc:
             accounts.append(acc)
 
