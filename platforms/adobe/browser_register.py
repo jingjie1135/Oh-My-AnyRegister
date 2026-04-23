@@ -490,19 +490,34 @@ class AdobeBrowserRegister:
                     except Exception:
                         pass
 
-                # 6b. 使用 all_domains=True 提取浏览器内全部域名的 Cookie
-                # 这与 browser-cookie-exporter 插件使用 chrome.cookies.getAll() 的行为一致
+                # 6b. 使用 CDP Network.getAllCookies 提取浏览器内全部域名的 Cookie
+                # 关键：page.cookies() 可能不返回 HttpOnly Cookie (如 ims_sid)
+                # 而 CDP Network.getAllCookies 等同于 chrome.cookies.getAll()，能获取全部 Cookie
                 self.log("[Adobe] 6b. 提取全域 Cookie...")
                 all_cookies = []
                 try:
-                    all_cookies = self.page.cookies(all_domains=True)
-                except TypeError:
-                    # 兼容旧版 DrissionPage 不支持 all_domains 参数
+                    # 优先使用 CDP 协议获取完整 Cookie（包含 HttpOnly）
+                    cdp_result = self.page.run_cdp('Network.getAllCookies')
+                    all_cookies = cdp_result.get('cookies', [])
+                    self.log(f"[Adobe] CDP getAllCookies 返回 {len(all_cookies)} 条")
+                except Exception as cdp_err:
+                    self.log(f"⚠️ CDP getAllCookies 失败，回退 page.cookies: {cdp_err}")
                     try:
-                        cdp_result = self.page.run_cdp('Network.getAllCookies')
-                        all_cookies = cdp_result.get('cookies', [])
-                    except Exception:
+                        all_cookies = self.page.cookies(all_domains=True)
+                    except TypeError:
                         all_cookies = self.page.cookies()
+                
+                # 诊断日志: 检查关键 Cookie 是否在原始列表中
+                critical_keys = {'ims_sid', 'aux_sid', 'AWSELB', 'AWSELBCORS'}
+                found_critical = set()
+                for c in all_cookies:
+                    cname = c.get('name', '') if isinstance(c, dict) else getattr(c, 'name', '')
+                    if cname in critical_keys:
+                        cdomain = c.get('domain', '') if isinstance(c, dict) else getattr(c, 'domain', '')
+                        found_critical.add(cname)
+                        self.log(f"  🔑 [关键Cookie] {cname} @ {cdomain}")
+                if not found_critical:
+                    self.log("  ⚠️ 未在浏览器中发现 ims_sid / aux_sid 等关键 Cookie")
 
                 # 6c. 仅保留 Adobe 相关域名下的 Cookie (与浏览器插件提取范围一致)
                 adobe_domains = ('adobe.com', 'firefly.adobe.com', 'account.adobe.com',
