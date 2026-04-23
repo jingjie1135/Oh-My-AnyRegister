@@ -169,7 +169,18 @@ class AdobeBrowserRegister:
         if target:
             target.click()
             time.sleep(random.uniform(0.3, 0.7))
-            target.clear()
+            
+            # 使用更彻底的全选删除，应对部分 React 表单 clear() 失效的问题
+            from DrissionPage.common import Keys
+            try:
+                target.input(Keys.CTRL_A)
+                time.sleep(0.1)
+                target.input(Keys.BACKSPACE)
+                time.sleep(0.1)
+            except Exception as e:
+                self.log(f"⚠️ Keys 全选清理失败: {e}")
+                target.clear()
+                
             for char in text:
                 target.input(char)
                 delay = random.uniform(0.02, 0.12)
