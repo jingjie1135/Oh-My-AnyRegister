@@ -100,7 +100,7 @@ class AdobeBrowserRegister:
         "?deeplink=signup"
         "&callback=https://firefly.adobe.com/"
         "&client_id=clio-playground-web"
-        "&scope=openid,creative_cloud,creative_sdk,ab.manage"
+        "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,additional_info.projectedProductContext,additional_info.ownerOrg,uds_read,uds_write,ab.manage,read_organizations,additional_info.roles,account_cluster.read,creative_production"
     )
 
     def __init__(self, captcha=None, headless: bool = False, proxy: str = None, otp_callback=None, log_fn=None):
@@ -390,223 +390,45 @@ class AdobeBrowserRegister:
             # ============ 6. Firefly OAuth 授权 + 全域 Cookie 提取 ============
             cookie_str = ""
             try:
-                # 6a. 导航到 Firefly 主页，完成完整的 OAuth consent 授权链路
-                # 这一步是决定 Token 有效期（1h vs 24h）的关键！
-                # 只有完成了 firefly.adobe.com 的 OAuth 授权流程，Cookie 中才会
-                # 包含 firefly_api scope 的 consent 标记，Adobe IMS 才会签发 24h Token
-                self.log("[Adobe] 6. 导航到 Firefly 主页完成 OAuth 授权...")
-                try:
-                    # 构造与浏览器插件完全一致的 Firefly 入口 URL（包含完整scope）
-                    firefly_auth_url = (
-                        "https://auth.services.adobe.com/zh_HANS/deeplink.html"
-                        "?deeplink=ssofirst"
-                        "&callback=https://firefly.adobe.com/"
-                        "&client_id=clio-playground-web"
-                        "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,"
-                        "additional_info.projectedProductContext,"
-                        "additional_info.ownerOrg,uds_read,uds_write,ab.manage,"
-                        "read_organizations,additional_info.roles,"
-                        "account_cluster.read,creative_production"
-                    )
-                    self.page.get(firefly_auth_url)
-                    self._wait_page_ready(20)
-                    self._delay(3, 5)
-
-                    # 等待 OAuth consent 重定向并处理可能的授权弹窗
-                    max_consent_wait = 30
-                    consent_start = time.time()
-                    while time.time() - consent_start < max_consent_wait:
-                        current_url = self.page.url or ""
-
-                        # 如果已经成功跳转到 firefly.adobe.com，说明授权完成
-                        if "firefly.adobe.com" in current_url and "auth.services" not in current_url:
-                            self.log("✅ Firefly OAuth 授权跳转完成!")
-                            break
-
-                        # 检查是否出现了 consent（授权同意）页面
-                        consent_btn = None
-                        for sel in ['button:contains("允许")', 'button:contains("Allow")',
-                                     'button:contains("同意")', 'button:contains("Agree")',
-                                     'button:contains("Accept")', 'button:contains("接受")']:
-                            try:
-                                consent_btn = self.page.ele(sel, timeout=1)
-                                if consent_btn and consent_btn.states.is_displayed:
-                                    break
-                                consent_btn = None
-                            except Exception:
-                                consent_btn = None
-
-                        if consent_btn:
-                            self.log("🔑 检测到 OAuth 授权同意页面，正在点击同意...")
-                            try:
-                                consent_btn.click()
-                                self._delay(2, 3)
-                            except Exception:
-                                pass
-                                
-                        # 有可能出现 "Continue / 继续" 提示页
-                        continue_btn = None
-                        for sel in ['button:contains("Continue")', 'button:contains("继续")', 'a:contains("Continue")', 'a:contains("继续")']:
-                            try:
-                                continue_btn = self.page.ele(sel, timeout=1)
-                                if continue_btn and continue_btn.states.is_displayed:
-                                    break
-                                continue_btn = None
-                            except Exception:
-                                continue_btn = None
-                                
-                        if continue_btn:
-                            self.log("🔑 检测到继续跳转页面，正在点击继续...")
-                            try:
-                                continue_btn.click()
-                                self._delay(2, 3)
-                            except Exception:
-                                pass
-
-                        # 检测是否需要接受 Firefly Terms of Service
-                        tos_texts = ['服务条款', 'Terms of Service', 'Terms of Use',
-                                     'I agree', '我同意', 'Get started', '开始使用']
-                        for txt in tos_texts:
-                            try:
-                                tos_ele = self.page.ele(f'text:{txt}', timeout=1)
-                                if tos_ele and tos_ele.states.is_displayed:
-                                    tag = tos_ele.tag.lower()
-                                    if tag in ('button', 'a', 'span', 'label', 'input'):
-                                        self.log(f"📋 检测到服务条款确认: '{txt}'，正在点击...")
-                                        tos_ele.click()
-                                        self._delay(2, 3)
-                                        break
-                            except Exception:
-                                continue
-
-                        time.sleep(2)
-
-                    # 确保最终停留在 firefly.adobe.com 上
-                    final_url = self.page.url or ""
-                    # 避免 final_url 包含 callback=firefly.adobe.com 却没真正跳转过去的情况
-                    if not final_url.startswith("https://firefly.adobe.com"):
-                        self.log("[Adobe] 6a-retry. 未正确跳转，强制导航到 Firefly 首页...")
-                        self.page.get("https://firefly.adobe.com/")
-                        self._wait_page_ready(15)
-                        self._delay(3, 5)
-
-                    self.log(f"[Adobe] 6a. 当前页面: {self.page.url}")
-
-                except Exception as nav_err:
-                    self.log(f"⚠️ Firefly OAuth 授权流程异常 (尝试直接导航): {nav_err}")
+                # 6. 等待原生跳转回到 Firefly 主页
+                # 千万不要用 page.get 去主动打断，因为后台正在创建账号并发放 ims_sid!
+                self.log("[Adobe] 6. 等待原生注册流程闭环并重定向至 Firefly...")
+                
+                # 等待最长 45 秒让 Adobe 走完它所有的页面，期间遇到任何可以继续的按钮就点
+                wait_time = 0
+                while wait_time < 45:
+                    cur_url = self.page.url or ""
+                    
+                    if cur_url.startswith("https://firefly.adobe.com"):
+                        self.log("[Adobe] ✅ 原生跳转抵达 Firefly 主页！")
+                        break
+                        
+                    # 如果卡在同意条款等页面
                     try:
-                        self.page.get("https://firefly.adobe.com/")
-                        self._wait_page_ready(15)
-                        self._delay(3, 5)
+                        tos_texts = ['继续', '同意并继续', 'Continue', 'Agree and continue', '完成', 'Done', '跳过', 'Skip']
+                        if not self.page.ele(f'@@tag()=button@@text():{tos_texts[0]}', timeout=0.1):
+                            for txt in tos_texts:
+                                ele = self.page.ele(f'text:{txt}', timeout=0.5)
+                                if ele and ele.states.is_displayed and ele.tag.lower() in ('button', 'a', 'span'):
+                                    self.log(f"📋 检测到可能是拦截卡点按钮: '{txt}'，尝试点击...")
+                                    ele.click()
+                                    self._delay(1, 2)
+                                    break
                     except Exception:
                         pass
-
-                # 6a-ims. 让浏览器直接导航到 IMS authorize 端点以建立 session
-                # 之前的 JS fetch 方式有两个致命问题:
-                #   1) run_js 无法 await async Promise，返回 None
-                #   2) 跨域 fetch 无法让 .adobelogin.com 设置 HttpOnly cookie
-                # 正确做法: 让浏览器直接导航到 IMS authorize 端点（同域请求）
-                # 由于用户已在 account.adobe.com 上认证，IMS 会识别 session
-                # 并在 .adobelogin.com 域上设置 ims_sid cookie，
-                # 然后自动重定向回 Firefly
-                try:
-                    self.log("[Adobe] 6a-ims. 导航到 IMS authorize 端点建立 session...")
-                    ims_authorize_url = (
-                        "https://ims-na1.adobelogin.com/ims/authorize/v2"
-                        "?client_id=clio-playground-web"
-                        "&redirect_uri=https://firefly.adobe.com/"
-                        "&response_type=token"
-                        "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,"
-                        "additional_info.projectedProductContext,"
-                        "additional_info.ownerOrg,uds_read,uds_write,ab.manage,"
-                        "read_organizations,additional_info.roles,"
-                        "account_cluster.read,creative_production"
-                    )
-                    self.page.get(ims_authorize_url)
-                    self._wait_page_ready(20)
-                    self._delay(3, 5)
-                    
-                    # 等待 IMS 重定向完成（最终应回到 firefly.adobe.com）
-                    ims_wait = 0
-                    while ims_wait < 40:
-                        cur = self.page.url or ""
-                        if cur.startswith("https://firefly.adobe.com"):
-                            self.log(f"[Adobe] IMS authorize 重定向成功: {cur[:80]}")
-                            break
                         
-                        # 如果停留在登录页面（且带有 auth.services.adobe.com），自动登录
-                        if "auth.services.adobe.com" in cur:
-                            try:
-                                email_field = self.page.ele('#EmailPage-EmailField', timeout=1) or self.page.ele('#EmailForm-email', timeout=0.5)
-                                if email_field and email_field.states.is_displayed:
-                                    self.log("[Adobe] IMS 拦截: 遇到邮箱输入要求...")
-                                    try:
-                                        self.page.get_screenshot(path='logs/intercept_email.png', full_page=True)
-                                    except Exception:
-                                        pass
-                                    self._safe_type(email_field, email)
-                                    self._delay(0.5, 1)
-                                    email_field.input('\n')
-                                    # 给页面加载留一点时间，避免被下一次循环立刻又捕获
-                                    time.sleep(3)
-                            except Exception:
-                                pass
-                                
-                            try:
-                                pwd_field = self.page.ele('#PasswordPage-PasswordField', timeout=1) or self.page.ele('input[type="password"]', timeout=0.5)
-                                if pwd_field and pwd_field.states.is_displayed:
-                                    self.log("[Adobe] IMS 拦截: 遇到密码输入要求...")
-                                    try:
-                                        self.page.get_screenshot(path='logs/intercept_pwd.png', full_page=True)
-                                    except Exception:
-                                        pass
-                                    pwd_field.clear()
-                                    self._safe_type(pwd_field, password)
-                                    self._delay(0.5, 1)
-                                    pwd_field.input('\n')
-                                    time.sleep(3)
-                            except Exception:
-                                pass
-                                
-                            # 应对可能出现的二次邮箱验证码 (重登录触发)
-                            try:
-                                verify_txts = ['验证您的电子邮件', '验证码', 'Verify your email', 'verification']
-                                if any(self.page.ele(f'text:{txt}', timeout=0.5) for txt in verify_txts):
-                                    if self._otp_callback:
-                                        self.log("📧 IMS 拦截: 检测到二次邮箱验证，正在尝试接码...")
-                                        start_otp = time.time()
-                                        while time.time() - start_otp < 60:
-                                            # 注意：底层代理必须支持增量拉取最新邮件
-                                            content_dict = self._otp_callback()
-                                            if content_dict and isinstance(content_dict, dict):
-                                                body = content_dict.get('html_body') or content_dict.get('body') or ""
-                                                code = self.extract_otp_code(body)
-                                                if code:
-                                                    self.log(f"🔑 拦截到二次验证码: {code}")
-                                                    code_inputs = self.page.eles('input[maxlength="1"]', timeout=3)
-                                                    if code_inputs and len(code_inputs) >= 6:
-                                                        for i, digit in enumerate(code[:6]):
-                                                            code_inputs[i].click()
-                                                            self._delay(0.05, 0.15)
-                                                            code_inputs[i].input(digit)
-                                                    else:
-                                                        cf = self.page.ele('input[name="code"]', timeout=3) or self.page.ele('input[type="text"]', timeout=3)
-                                                        if cf: self._safe_type(cf, code)
-                                                    self._delay(1, 2)
-                                                    self._find_and_click(['验证', '继续', 'Verify', 'Continue'], timeout=5, tag_filter=['button'])
-                                                    break
-                                            time.sleep(5)
-                            except Exception as otp_err:
-                                self.log(f"⚠️ IMS 二次接码异常: {otp_err}")
-
-                        time.sleep(2)
-                        ims_wait += 2
-                    else:
-                        self.log(f"[Adobe] IMS authorize 重定向超时, 当前: {self.page.url}")
+                    time.sleep(2)
+                    wait_time += 2
+                else:
+                    self.log(f"⚠️ 45秒未回到火萤，当前停留网址: {self.page.url}")
                     
-                    self._delay(3, 5)
-                except Exception as ims_err:
-                    self.log(f"⚠️ IMS session 触发异常: {ims_err}")
+                # 抵达火萤后，给前台 JS 3-5 秒的时间打底，确保任何后台的 Token check 走完
+                self.log("[Adobe] 等待 Firefly 前端渲染和凭证稳定...")
+                self._wait_page_ready(15)
+                self._delay(3, 5)
+                
+            except Exception as e:
+                self.log(f"⚠️ 耐心等待重定向环节发生异常: {e}")
 
                 # 6b. 使用 CDP Network.getAllCookies 提取浏览器内全部域名的 Cookie
                 # 关键：page.cookies() 可能不返回 HttpOnly Cookie (如 ims_sid)
