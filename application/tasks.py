@@ -506,12 +506,11 @@ def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id:
         from infrastructure.upload_channels_repository import UploadChannelsRepository
         import services.upload_services as upload_services
         
-        with Session(engine) as session:
-            repo = UploadChannelsRepository(session)
-            channel = repo.get_channel(channel_id)
-            if not channel or not channel.is_enabled:
-                task_logger.log(f"  [定向分发] 目标通道失效或不存在 (ID: {channel_id})", level="warning")
-                return
+        repo = UploadChannelsRepository()
+        channel = repo.get_by_id(channel_id)
+        if not channel or not channel.is_enabled:
+            task_logger.log(f"  [定向分发] 目标通道失效或不存在 (ID: {channel_id})", level="warning")
+            return
 
         driver = upload_services.get_upload_driver(channel.channel_type, channel.api_url, channel.api_key)
         
