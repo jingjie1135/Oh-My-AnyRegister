@@ -432,6 +432,25 @@ class AdobeBrowserRegister:
                                 self._delay(2, 3)
                             except Exception:
                                 pass
+                                
+                        # 有可能出现 "Continue / 继续" 提示页
+                        continue_btn = None
+                        for sel in ['button:contains("Continue")', 'button:contains("继续")', 'a:contains("Continue")', 'a:contains("继续")']:
+                            try:
+                                continue_btn = self.page.ele(sel, timeout=1)
+                                if continue_btn and continue_btn.states.is_displayed:
+                                    break
+                                continue_btn = None
+                            except Exception:
+                                continue_btn = None
+                                
+                        if continue_btn:
+                            self.log("🔑 检测到继续跳转页面，正在点击继续...")
+                            try:
+                                continue_btn.click()
+                                self._delay(2, 3)
+                            except Exception:
+                                pass
 
                         # 检测是否需要接受 Firefly Terms of Service
                         tos_texts = ['服务条款', 'Terms of Service', 'Terms of Use',
@@ -453,8 +472,9 @@ class AdobeBrowserRegister:
 
                     # 确保最终停留在 firefly.adobe.com 上
                     final_url = self.page.url or ""
-                    if "firefly.adobe.com" not in final_url:
-                        self.log("[Adobe] 6a-retry. 直接导航到 Firefly 首页...")
+                    # 避免 final_url 包含 callback=firefly.adobe.com 却没真正跳转过去的情况
+                    if not final_url.startswith("https://firefly.adobe.com"):
+                        self.log("[Adobe] 6a-retry. 未正确跳转，强制导航到 Firefly 首页...")
                         self.page.get("https://firefly.adobe.com/")
                         self._wait_page_ready(15)
                         self._delay(3, 5)
