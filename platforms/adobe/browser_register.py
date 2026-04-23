@@ -490,40 +490,44 @@ class AdobeBrowserRegister:
                     except Exception:
                         pass
 
-                # 6a-ims. 主动触发 IMS session 建立以获取 ims_sid cookie
-                # ims_sid 是由 adobeid-na1.services.adobe.com / ims-na1.adobelogin.com 设置的
-                # HttpOnly cookie，只有浏览器实际访问这些域时才会被设置。
-                # 没有 ims_sid 的 Cookie 在做 token refresh 时只能拿到 1h 有效期。
+                # 6a-ims. 让浏览器直接导航到 IMS authorize 端点以建立 session
+                # 之前的 JS fetch 方式有两个致命问题:
+                #   1) run_js 无法 await async Promise，返回 None
+                #   2) 跨域 fetch 无法让 .adobelogin.com 设置 HttpOnly cookie
+                # 正确做法: 让浏览器直接导航到 IMS authorize 端点（同域请求）
+                # 由于用户已在 account.adobe.com 上认证，IMS 会识别 session
+                # 并在 .adobelogin.com 域上设置 ims_sid cookie，
+                # 然后自动重定向回 Firefly
                 try:
-                    self.log("[Adobe] 6a-ims. 触发 IMS session 建立...")
-                    # 使用 JavaScript 发送一个 XHR 到 IMS token check 端点（与 Firefly 前端运行时行为一致）
-                    # 这会让浏览器自动在 .adobelogin.com 域上带上并建立 session cookie
-                    ims_js = """
-                    (async () => {
-                        try {
-                            const formData = new URLSearchParams({
-                                client_id: 'clio-playground-web',
-                                scope: 'AdobeID,firefly_api,openid,pps.read,pps.write,additional_info.projectedProductContext,additional_info.ownerOrg,uds_read,uds_write,ab.manage,read_organizations,additional_info.roles,account_cluster.read,creative_production',
-                                guest_allowed: 'true'
-                            });
-                            const resp = await fetch('https://adobeid-na1.services.adobe.com/ims/check/v6/token?jslVersion=v2-v0.48.0-1-g1e322cb', {
-                                method: 'POST',
-                                body: formData,
-                                credentials: 'include',
-                                headers: {
-                                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-                                    'Accept': '*/*'
-                                }
-                            });
-                            return resp.status + ':' + resp.statusText;
-                        } catch(e) {
-                            return 'err:' + e.message;
-                        }
-                    })()
-                    """
-                    ims_result = self.page.run_js(ims_js, timeout=15)
-                    self.log(f"[Adobe] IMS token check 响应: {ims_result}")
-                    self._delay(2, 3)
+                    self.log("[Adobe] 6a-ims. 导航到 IMS authorize 端点建立 session...")
+                    ims_authorize_url = (
+                        "https://ims-na1.adobelogin.com/ims/authorize/v2"
+                        "?client_id=clio-playground-web"
+                        "&redirect_uri=https://firefly.adobe.com/"
+                        "&response_type=token"
+                        "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,"
+                        "additional_info.projectedProductContext,"
+                        "additional_info.ownerOrg,uds_read,uds_write,ab.manage,"
+                        "read_organizations,additional_info.roles,"
+                        "account_cluster.read,creative_production"
+                    )
+                    self.page.get(ims_authorize_url)
+                    self._wait_page_ready(20)
+                    self._delay(3, 5)
+                    
+                    # 等待 IMS 重定向完成（最终应回到 firefly.adobe.com）
+                    ims_wait = 0
+                    while ims_wait < 30:
+                        cur = self.page.url or ""
+                        if cur.startswith("https://firefly.adobe.com"):
+                            self.log(f"[Adobe] IMS authorize 重定向成功: {cur[:80]}")
+                            break
+                        time.sleep(2)
+                        ims_wait += 2
+                    else:
+                        self.log(f"[Adobe] IMS authorize 重定向超时, 当前: {self.page.url}")
+                    
+                    self._delay(3, 5)
                 except Exception as ims_err:
                     self.log(f"⚠️ IMS session 触发异常: {ims_err}")
 
