@@ -1451,7 +1451,7 @@ function BatchUploadModal({ selectedIds, onClose, onDone }: { selectedIds: numbe
     if (!channelId) return
     setLoading(true)
     try {
-      const res = await apiFetch('/upload-channels/batch', {
+      const res = await apiFetch(`/upload-channels/${channelId}/batch`, {
         method: 'POST',
         body: JSON.stringify({ account_ids: selectedIds, channel_id: channelId })
       })
