@@ -544,8 +544,9 @@ class AdobeBrowserRegister:
                                         self.page.get_screenshot(path='logs/intercept_email.png', full_page=True)
                                     except Exception:
                                         pass
-                                    email_field.clear()
-                                    self._safe_type(email_field, email)
+                                    cur_val = email_field.value or ""
+                                    if email.lower() not in cur_val.lower():
+                                        self._safe_type(email_field, email)
                                     self._delay(0.5, 1)
                                     email_field.input('\n')
                                     # 给页面加载留一点时间，避免被下一次循环立刻又捕获
