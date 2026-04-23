@@ -530,8 +530,11 @@ class AdobeBrowserRegister:
                                 if email_field and email_field.states.is_displayed:
                                     self.log("[Adobe] IMS 拦截: 遇到邮箱输入要求...")
                                     email_field.clear()
-                                    email_field.input(email)
-                                    self._find_and_click(['Continue', '继续'], timeout=2)
+                                    self._safe_type(email_field, email)
+                                    self._delay(0.5, 1)
+                                    email_field.input('\n')
+                                    # 给页面加载留一点时间，避免被下一次循环立刻又捕获
+                                    time.sleep(3)
                             except Exception:
                                 pass
                                 
@@ -540,8 +543,10 @@ class AdobeBrowserRegister:
                                 if pwd_field and pwd_field.states.is_displayed:
                                     self.log("[Adobe] IMS 拦截: 遇到密码输入要求...")
                                     pwd_field.clear()
-                                    pwd_field.input(password)
-                                    self._find_and_click(['Continue', '继续'], timeout=2)
+                                    self._safe_type(pwd_field, password)
+                                    self._delay(0.5, 1)
+                                    pwd_field.input('\n')
+                                    time.sleep(3)
                             except Exception:
                                 pass
                                 
