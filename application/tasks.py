@@ -501,10 +501,9 @@ def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id:
     if not channel_id:
         return
     try:
-        from sqlmodel import Session
-        from core.db import engine
         from infrastructure.upload_channels_repository import UploadChannelsRepository
-        import services.upload_services as upload_services
+        from infrastructure.accounts_repository import AccountsRepository
+        from api.upload import get_uploader
         
         repo = UploadChannelsRepository()
         channel = repo.get_by_id(channel_id)
@@ -512,30 +511,31 @@ def _auto_push_to_selected_channel(task_logger: TaskLogger, account, channel_id:
             task_logger.log(f"  [定向分发] 目标通道失效或不存在 (ID: {channel_id})", level="warning")
             return
 
-        driver = upload_services.get_upload_driver(channel.channel_type, channel.api_url, channel.api_key)
-        
-        extra = dict(account.extra or {})
-        ac_dict = {
-            "account_id": str(getattr(account, "user_id", "") or getattr(account, "email", "") or ""),
-            "email": str(getattr(account, "email", "") or ""),
-            "password": str(getattr(account, "password", "") or ""),
-            "cookie": str(extra.get("cookies", "") or ""),
-            "token": str(getattr(account, "token", "") or extra.get("access_token", "") or ""),
-        }
-        res = driver.push_accounts([ac_dict])
+        acc_repo = AccountsRepository()
+        account_record = acc_repo.get(account.id)
+        if not account_record:
+            task_logger.log(f"  [定向分发] 无法获取账号详情 (ID: {account.id})", level="warning")
+            return
+
+        driver = get_uploader(channel.channel_type)
+        res = driver.upload_accounts(channel, [account_record])
         
         msg_parts = []
-        if res.success_count:
-            msg_parts.append(f"推送成功 {res.success_count} 个")
-        if res.failed_count:
-            msg_parts.append(f"失败 {res.failed_count} 个")
+        if res.get("success_count"):
+            msg_parts.append(f"推送成功 {res.get('success_count')} 个")
+        if res.get("failed_count"):
+            msg_parts.append(f"失败 {res.get('failed_count')} 个")
         msg = ", ".join(msg_parts) or "无推送结果反馈"
         task_logger.log(f"  [{channel.name} 投递] {msg}")
-        for err in res.errors:
-            task_logger.log(f"  -> {err}", level="warning")
+        for detail in res.get("details", []):
+            if not detail.get("success"):
+                task_logger.log(f"  -> {detail.get('error')}", level="warning")
+            else:
+                task_logger.log(f"  -> {detail.get('message')}")
             
     except Exception as exc:
-        task_logger.log(f"  [定向分发异常] {exc}", level="error")
+        import traceback
+        task_logger.log(f"  [定向分发异常] {exc}\n{traceback.format_exc()}", level="error")
 
 
 def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None, shared_mailbox=None):
