@@ -544,6 +544,37 @@ class AdobeBrowserRegister:
                                     self._find_and_click(['Continue', '继续'], timeout=2)
                             except Exception:
                                 pass
+                                
+                            # 应对可能出现的二次邮箱验证码 (重登录触发)
+                            try:
+                                verify_txts = ['验证您的电子邮件', '验证码', 'Verify your email', 'verification']
+                                if any(self.page.ele(f'text:{txt}', timeout=0.5) for txt in verify_txts):
+                                    if self._otp_callback:
+                                        self.log("📧 IMS 拦截: 检测到二次邮箱验证，正在尝试接码...")
+                                        start_otp = time.time()
+                                        while time.time() - start_otp < 60:
+                                            # 注意：底层代理必须支持增量拉取最新邮件
+                                            content_dict = self._otp_callback()
+                                            if content_dict and isinstance(content_dict, dict):
+                                                body = content_dict.get('html_body') or content_dict.get('body') or ""
+                                                code = self.extract_otp_code(body)
+                                                if code:
+                                                    self.log(f"🔑 拦截到二次验证码: {code}")
+                                                    code_inputs = self.page.eles('input[maxlength="1"]', timeout=3)
+                                                    if code_inputs and len(code_inputs) >= 6:
+                                                        for i, digit in enumerate(code[:6]):
+                                                            code_inputs[i].click()
+                                                            self._delay(0.05, 0.15)
+                                                            code_inputs[i].input(digit)
+                                                    else:
+                                                        cf = self.page.ele('input[name="code"]', timeout=3) or self.page.ele('input[type="text"]', timeout=3)
+                                                        if cf: self._safe_type(cf, code)
+                                                    self._delay(1, 2)
+                                                    self._find_and_click(['验证', '继续', 'Verify', 'Continue'], timeout=5, tag_filter=['button'])
+                                                    break
+                                            time.sleep(5)
+                            except Exception as otp_err:
+                                self.log(f"⚠️ IMS 二次接码异常: {otp_err}")
 
                         time.sleep(2)
                         ims_wait += 2
