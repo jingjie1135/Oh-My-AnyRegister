@@ -50,6 +50,8 @@ class ChatGPTPlatform(BasePlatform):
     name = "chatgpt"
     display_name = "ChatGPT"
     version = "1.0.0"
+    supported_executors = ["protocol", "headless", "headed"]
+    supported_identity_modes = ["mailbox", "oauth_browser"]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)

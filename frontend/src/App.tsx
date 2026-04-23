@@ -7,6 +7,7 @@ import Register from '@/pages/Register'
 import Proxies from '@/pages/Proxies'
 import Settings from '@/pages/Settings'
 import TaskHistory from '@/pages/TaskHistory'
+import UploadCredentials from '@/pages/UploadCredentials'
 import {
   ChevronDown,
   ChevronRight,
@@ -16,6 +17,7 @@ import {
   Moon,
   Settings as SettingsIcon,
   Sun,
+  UploadCloud,
   Users,
 } from 'lucide-react'
 
@@ -31,6 +33,7 @@ const PRIMARY_NAV: NavItem[] = [
 ]
 
 const SECONDARY_NAV: NavItem[] = [
+  { path: '/upload', label: '凭据上传', icon: UploadCloud },
   { path: '/history', label: '任务记录', icon: History },
   { path: '/proxies', label: '代理资源', icon: Globe },
   { path: '/settings', label: '配置中心', icon: SettingsIcon },
@@ -169,6 +172,7 @@ function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void 
               <Route path="/accounts" element={<Accounts />} />
               <Route path="/accounts/:platform" element={<Accounts />} />
               <Route path="/register" element={<Register />} />
+              <Route path="/upload" element={<UploadCredentials />} />
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />
               <Route path="/settings" element={<Settings />} />

@@ -11,16 +11,18 @@ FROM python:3.12-slim
 
 # 系统依赖：Chromium、Xvfb、x11vnc、noVNC
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # 浏览器运行依赖
+    # 浏览器运行依赖（Chromium）
     chromium chromium-driver \
     # 虚拟显示 + VNC
     xvfb x11vnc \
     # noVNC 依赖
     novnc websockify \
-    # 其他
+    # Chromium/通用系统库
     curl ca-certificates fonts-liberation libnss3 libatk-bridge2.0-0 \
     libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 \
     libasound2 libpango-1.0-0 libcairo2 libgtk-3-0 \
+    # Firefox/Camoufox 运行依赖
+    libdbus-glib-1-2 libxt6 libx11-xcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -28,6 +30,12 @@ WORKDIR /app
 # 安装 Python 依赖
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 下载 Camoufox 浏览器二进制（Turnstile Solver 依赖）
+RUN python -m camoufox fetch
+
+# 安装 Patchright 浏览器（Solver 备用引擎）
+RUN patchright install chromium || true
 
 # 安装 Playwright 浏览器
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright

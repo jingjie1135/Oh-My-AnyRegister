@@ -16,8 +16,31 @@ class ProviderDefinitionsRepository:
     # ── seeding（仅首次初始化） ──────────────────────────────────────
 
     def ensure_seeded(self) -> None:
-        """数据完全由 DB 管理，不做任何自动填充。"""
-        pass
+        """如果数据库中没有 BUILTIN 数据，则从 seeds.py 中加载模板。"""
+        from infrastructure.seeds import ALL_SEEDS
+
+        with Session(engine) as session:
+            # 检查是否已有内置数据
+            existing = session.exec(
+                select(ProviderDefinitionModel).where(ProviderDefinitionModel.is_builtin == True)
+            ).first()
+            if existing:
+                return
+
+            print(f"[Seed] 正在初始化 {len(ALL_SEEDS)} 个内置 Provider 驱动模板...")
+            for data in ALL_SEEDS:
+                m = ProviderDefinitionModel(
+                    provider_type=data["provider_type"],
+                    provider_key=data["provider_key"],
+                    label=data["label"],
+                    driver_type=data["driver_type"],
+                    is_builtin=True,
+                )
+                m.set_fields(data.get("fields", []))
+                m.created_at = _utcnow()
+                m.updated_at = _utcnow()
+                session.add(m)
+            session.commit()
 
     # ── 查询（全部从 DB） ────────────────────────────────────────────
 

@@ -29,13 +29,17 @@ def start():
         solver_script = os.path.join(
             os.path.dirname(__file__), "turnstile_solver", "start.py"
         )
+        # 日志输出到文件，方便排查启动失败的原因
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = open(os.path.join(log_dir, "solver.log"), "a", encoding="utf-8")
         _proc = subprocess.Popen(
             [sys.executable, solver_script,
              "--browser_type", "camoufox",
              "--thread", "1",   # 只需要 1 个浏览器，节省资源
              "--port", str(SOLVER_PORT)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
         )
         # 等待服务就绪（最多30s）
         for _ in range(30):
@@ -43,7 +47,7 @@ def start():
             if is_running():
                 print(f"[Solver] 已启动 PID={_proc.pid}")
                 return
-        print("[Solver] 启动超时")
+        print("[Solver] 启动超时，请查看 data/solver.log 排查原因")
 
 
 def stop():

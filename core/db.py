@@ -225,6 +225,19 @@ class PlatformCapabilityOverrideModel(SQLModel, table=True):
         self.capabilities_json = json.dumps(data or {}, ensure_ascii=False)
 
 
+class UploadChannelModel(SQLModel, table=True):
+    __tablename__ = "upload_channels"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    channel_type: str = Field(index=True)  # cpa, sub2api, team_manager, new_api, adobe2api, flow2api
+    api_url: str = ""
+    api_key: str = ""
+    is_enabled: bool = True
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class TaskLog(SQLModel, table=True):
     __tablename__ = "task_logs"
 
