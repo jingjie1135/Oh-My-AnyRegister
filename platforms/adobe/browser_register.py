@@ -394,9 +394,9 @@ class AdobeBrowserRegister:
                 # 千万不要用 page.get 去主动打断，因为后台正在创建账号并发放 ims_sid!
                 self.log("[Adobe] 6. 等待原生注册流程闭环并重定向至 Firefly...")
                 
-                # 等待最长 45 秒让 Adobe 走完它所有的页面，期间遇到任何可以继续的按钮就点
+                # 等待最长 60 秒让 Adobe 走完它所有的页面，期间遇到任何可以继续的按钮就点
                 wait_time = 0
-                while wait_time < 45:
+                while wait_time < 60:
                     cur_url = self.page.url or ""
                     
                     if cur_url.startswith("https://firefly.adobe.com"):
@@ -420,12 +420,12 @@ class AdobeBrowserRegister:
                     time.sleep(2)
                     wait_time += 2
                 else:
-                    self.log(f"⚠️ 45秒未回到火萤，当前停留网址: {self.page.url}")
+                    self.log(f"⚠️ 60秒未回到火萤，当前停留网址: {self.page.url}")
                     
-                # 抵达火萤后，给前台 JS 3-5 秒的时间打底，确保任何后台的 Token check 走完
+                # 抵达火萤后，给前台 JS 10-15 秒的时间打底，确保任何后台的 Token check 走完
                 self.log("[Adobe] 等待 Firefly 前端渲染和凭证稳定...")
-                self._wait_page_ready(15)
-                self._delay(3, 5)
+                self._wait_page_ready(20)
+                self._delay(10, 15)
                 
             except Exception as e:
                 self.log(f"⚠️ 耐心等待重定向环节发生异常: {e}")
