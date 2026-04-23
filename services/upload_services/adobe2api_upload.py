@@ -128,16 +128,17 @@ class Adobe2ApiUploader(BaseUploader):
                     )
                     if resp.status_code in (200, 201):
                         resp_data = resp.json()
-                        if resp_data.get("status") == "partial" or resp_data.get("refresh_error"):
-                            err = resp_data.get("refresh_error") or "后端刷新失败"
-                            results["failed_count"] += 1
-                            results["details"].append(
-                                {"id": acc.id, "email": acc.email, "success": False, "error": f"入库成功但刷新鉴权失败: {err}"}
-                            )
-                        else:
+                        refresh_err = resp_data.get("refresh_error") or ""
+                        status_val = resp_data.get("status", "")
+                        # Cookie 已成功入库到 adobe2api，即使即时 refresh 失败也算成功
+                        # adobe2api 后台会按照配置的刷新间隔自动重试
+                        if status_val == "ok" or resp_data.get("profile"):
+                            msg = "Cookie上传并刷新成功"
+                            if refresh_err:
+                                msg = f"Cookie已入库, 首次刷新待重试: {refresh_err}"
                             results["success_count"] += 1
                             results["details"].append(
-                                {"id": acc.id, "email": acc.email, "success": True, "message": "Cookie上传并刷新成功"}
+                                {"id": acc.id, "email": acc.email, "success": True, "message": msg}
                             )
                     else:
                         error_msg = f"HTTP {resp.status_code}"
