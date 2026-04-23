@@ -173,12 +173,12 @@ class AdobeBrowserRegister:
             # 使用更彻底的全选删除，应对部分 React 表单 clear() 失效的问题
             from DrissionPage.common import Keys
             try:
-                target.input(Keys.CTRL_A)
-                time.sleep(0.1)
-                target.input(Keys.BACKSPACE)
+                # 物理删除 60 次退格键，无视任何选区失效的 bug
+                for _ in range(60):
+                    target.input(Keys.BACKSPACE)
                 time.sleep(0.1)
             except Exception as e:
-                self.log(f"⚠️ Keys 全选清理失败: {e}")
+                self.log(f"⚠️ Keys 退格清理失败: {e}")
                 target.clear()
                 
             for char in text:
@@ -544,9 +544,7 @@ class AdobeBrowserRegister:
                                         self.page.get_screenshot(path='logs/intercept_email.png', full_page=True)
                                     except Exception:
                                         pass
-                                    cur_val = email_field.value or ""
-                                    if email.lower() not in cur_val.lower():
-                                        self._safe_type(email_field, email)
+                                    self._safe_type(email_field, email)
                                     self._delay(0.5, 1)
                                     email_field.input('\n')
                                     # 给页面加载留一点时间，避免被下一次循环立刻又捕获
