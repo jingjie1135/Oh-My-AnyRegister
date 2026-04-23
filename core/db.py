@@ -331,6 +331,7 @@ def save_account(account) -> 'AccountModel':
             session.refresh(existing)
             sync_platform_account_graph(session, existing, account)
             session.commit()
+            session.refresh(existing)  # 确保 Session 关闭后属性仍可访问
             return existing
         m = AccountModel(
             platform=account.platform,
@@ -343,6 +344,7 @@ def save_account(account) -> 'AccountModel':
         session.refresh(m)
         sync_platform_account_graph(session, m, account)
         session.commit()
+        session.refresh(m)  # 确保 Session 关闭后属性仍可访问
         return m
 
 
