@@ -517,11 +517,34 @@ class AdobeBrowserRegister:
                     
                     # 等待 IMS 重定向完成（最终应回到 firefly.adobe.com）
                     ims_wait = 0
-                    while ims_wait < 30:
+                    while ims_wait < 40:
                         cur = self.page.url or ""
                         if cur.startswith("https://firefly.adobe.com"):
                             self.log(f"[Adobe] IMS authorize 重定向成功: {cur[:80]}")
                             break
+                        
+                        # 如果停留在登录页面（且带有 auth.services.adobe.com），自动登录
+                        if "auth.services.adobe.com" in cur:
+                            try:
+                                email_field = self.page.ele('#EmailPage-EmailField', timeout=1) or self.page.ele('#EmailForm-email', timeout=0.5)
+                                if email_field and email_field.states.is_displayed:
+                                    self.log("[Adobe] IMS 拦截: 遇到邮箱输入要求...")
+                                    email_field.clear()
+                                    email_field.input(email)
+                                    self._find_and_click(['Continue', '继续'], timeout=2)
+                            except Exception:
+                                pass
+                                
+                            try:
+                                pwd_field = self.page.ele('#PasswordPage-PasswordField', timeout=1) or self.page.ele('input[type="password"]', timeout=0.5)
+                                if pwd_field and pwd_field.states.is_displayed:
+                                    self.log("[Adobe] IMS 拦截: 遇到密码输入要求...")
+                                    pwd_field.clear()
+                                    pwd_field.input(password)
+                                    self._find_and_click(['Continue', '继续'], timeout=2)
+                            except Exception:
+                                pass
+
                         time.sleep(2)
                         ims_wait += 2
                     else:
