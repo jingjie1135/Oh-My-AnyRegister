@@ -86,6 +86,19 @@ MAILBOX_SEEDS = [
         ],
         "is_builtin": True
     },
+    {
+        "provider_type": "mailbox",
+        "provider_key": "private_api",
+        "label": "私人邮箱接口 (自建 API)",
+        "driver_type": "private_api",
+        "fields": [
+            {"key": "private_api_url", "label": "API 地址", "type": "text", "category": "config"},
+            {"key": "private_api_admin_email", "label": "管理员邮箱", "type": "text", "category": "auth"},
+            {"key": "private_api_admin_password", "label": "管理员密码", "type": "password", "category": "auth"},
+            {"key": "private_api_domain", "label": "指定域名", "type": "text", "category": "config"},
+        ],
+        "is_builtin": True
+    },
 ]
 
 # SMS 驱动定义

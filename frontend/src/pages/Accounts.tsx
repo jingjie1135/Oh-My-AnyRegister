@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, WalletCards, ShieldCheck, Inbox, ScanSearch, Trash2 } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, WalletCards, ShieldCheck, Inbox, ScanSearch, Trash2, CreditCard } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', trial: 'success', subscribed: 'success',
@@ -1433,6 +1433,96 @@ function ImportModal({ platform, onClose, onDone }: { platform: string; onClose:
   )
 }
 
+// ── 批量订阅弹框 ──────────────────────────────────────────────
+function BatchSubscribeModal({ selectedIds, onClose, onDone }: { selectedIds: number[]; onClose: () => void; onDone: () => void }) {
+  const [cards, setCards] = useState<any[]>([])
+  const [cardId, setCardId] = useState<number | ''>('')
+  const [headless, setHeadless] = useState<boolean>(true)
+  const [loading, setLoading] = useState(false)
+  const [taskId, setTaskId] = useState<string | null>(null)
+
+  // 加载虚拟卡列表
+  useEffect(() => {
+    apiFetch('/virtual-cards').then(data => {
+      setCards(data)
+      if (data.length > 0) setCardId(data[0].id)
+    }).catch(console.error)
+  }, [])
+
+  const submit = async () => {
+    if (!cardId) return
+    setLoading(true)
+    try {
+      const res = await apiFetch('/tasks/subscribe', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: selectedIds, card_id: cardId, headless })
+      })
+      setTaskId(res.id || res.task_id)
+    } catch (e: any) {
+      window.alert(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className={`dialog-panel p-6 ${taskId ? 'dialog-panel-lg max-w-4xl' : 'dialog-panel-sm'}`} onClick={e => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-[var(--text-primary)]">
+            批量订阅 Pro Plus 免费试用 ({selectedIds.length})
+          </h2>
+          {taskId && <button onClick={onClose} className="rounded-md p-1 hover:bg-[var(--bg-hover)]">✕</button>}
+        </div>
+        
+        {taskId ? (
+          <div className="h-[500px]">
+            <TaskLogPanel taskId={taskId} onDone={() => {}} />
+            <div className="mt-4 flex justify-end">
+              <Button onClick={() => { onClose(); onDone(); }}>完成</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div>
+              <label className="text-xs text-[var(--text-muted)] block mb-1.5">选择虚拟卡</label>
+              {cards.length === 0 ? (
+                <div className="text-xs text-red-400">请先在设置中添加虚拟卡</div>
+              ) : (
+                <select value={cardId} onChange={e => setCardId(e.target.value ? Number(e.target.value) : '')}
+                  className="control-surface appearance-none w-full">
+                  <option value="">-- 请选择虚拟卡 --</option>
+                  {cards.map((c: any) => (
+                    <option key={c.id} value={c.id}>{c.label} ({c.masked_number}) {c.exp_month}/{c.exp_year}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div>
+              <label className="text-xs text-[var(--text-muted)] block mb-1.5">浏览器模式</label>
+              <select value={headless ? 'yes' : 'no'} onChange={e => setHeadless(e.target.value === 'yes')}
+                className="control-surface appearance-none w-full">
+                <option value="yes">Headless (无界面，适合容器环境)</option>
+                <option value="no">Headed (可视化窗口，适合本地调试)</option>
+              </select>
+            </div>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3 text-xs text-[var(--text-secondary)]">
+              <div className="font-semibold mb-1">目标套餐</div>
+              <div>Adobe Firefly Pro Plus — 7 天免费试用 (US$0.00)</div>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={submit} disabled={loading || !cardId || cards.length === 0} className="flex-1">
+                {loading ? '启动中...' : '开始订阅'}
+              </Button>
+              <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── 批量下发弹框 ──────────────────────────────────────────────
 function BatchUploadModal({ selectedIds, onClose, onDone }: { selectedIds: number[]; onClose: () => void; onDone: () => void }) {
   const [channels, setChannels] = useState<any[]>([])
@@ -1636,6 +1726,7 @@ export default function Accounts() {
   const [detail, setDetail] = useState<any | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [showBatchUpload, setShowBatchUpload] = useState(false)
+  const [showBatchSubscribe, setShowBatchSubscribe] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
@@ -1740,6 +1831,7 @@ export default function Accounts() {
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
       {showBatchUpload && selectedCount > 0 && <BatchUploadModal selectedIds={[...selectedIds]} onClose={() => setShowBatchUpload(false)} onDone={() => { setShowBatchUpload(false); load() }} />}
+      {showBatchSubscribe && selectedCount > 0 && <BatchSubscribeModal selectedIds={[...selectedIds]} onClose={() => setShowBatchSubscribe(false)} onDone={() => { setShowBatchSubscribe(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
@@ -1775,6 +1867,10 @@ export default function Accounts() {
               <Button size="sm" variant="outline" disabled={selectedCount === 0} onClick={() => setShowBatchUpload(true)}>
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
                 批量下发{selectedCount > 0 ? `(${selectedCount})` : ''}
+              </Button>
+              <Button size="sm" variant="outline" disabled={selectedCount === 0} onClick={() => setShowBatchSubscribe(true)}>
+                <CreditCard className="mr-1.5 h-3.5 w-3.5" />
+                批量订阅{selectedCount > 0 ? `(${selectedCount})` : ''}
               </Button>
               {tab === 'chatgpt' ? (
                 <ExportMenu

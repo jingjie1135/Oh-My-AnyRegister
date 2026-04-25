@@ -27,6 +27,7 @@ TASK_TYPE_REGISTER = "register"
 TASK_TYPE_ACCOUNT_CHECK = "account_check"
 TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
 TASK_TYPE_PLATFORM_ACTION = "platform_action"
+TASK_TYPE_SUBSCRIBE = "subscribe"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_CLAIMED = "claimed"
@@ -237,6 +238,17 @@ def create_platform_action_task(payload: dict[str, Any]) -> dict[str, Any]:
         platform=str(payload.get("platform", "")),
         payload=payload,
         progress_total=1,
+    )
+
+
+def create_subscribe_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """创建订阅任务（如 Adobe Firefly Pro Plus 免费试用）"""
+    account_ids = list(payload.get("account_ids", []))
+    return create_task(
+        task_type=TASK_TYPE_SUBSCRIBE,
+        platform=str(payload.get("platform", "adobe")),
+        payload=payload,
+        progress_total=max(len(account_ids), 1),
     )
 
 
@@ -629,6 +641,7 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_ACCOUNT_CHECK: _execute_account_check_task,
         TASK_TYPE_ACCOUNT_CHECK_ALL: _execute_account_check_all_task,
         TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
+        TASK_TYPE_SUBSCRIBE: _execute_subscribe_task,
     }
     handler = handlers.get(task_type)
     if not handler:
@@ -933,3 +946,175 @@ def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger)
         logger.set_progress(completed, total)
     logger.set_result_data(results)
     logger.finish(TASK_STATUS_SUCCEEDED)
+
+
+def _execute_subscribe_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """执行批量订阅任务（Adobe Firefly Pro Plus 免费试用）"""
+    import traceback
+    from platforms.adobe.browser_subscribe import AdobeBrowserSubscribe
+
+    account_ids = list(payload.get("account_ids", []))
+    card_data = dict(payload.get("card", {}))
+    headless = payload.get("headless", True)
+    total = len(account_ids)
+
+    if not account_ids:
+        logger.finish(TASK_STATUS_FAILED, error="没有选择任何账号")
+        return
+    if not card_data or not card_data.get("card_number"):
+        logger.finish(TASK_STATUS_FAILED, error="未提供有效的虚拟卡信息")
+        return
+
+    logger.log(f"开始批量订阅，共 {total} 个账号")
+    logger.log(f"虚拟卡: ****{str(card_data.get('card_number', ''))[-4:]}")
+    logger.log(f"浏览器模式: {'headless' if headless else 'headed (可视化)'}")
+    logger.set_progress(0, total)
+
+    completed = 0
+    success_count = 0
+    fail_count = 0
+
+    for idx, account_id in enumerate(account_ids):
+        if logger.is_cancel_requested():
+            logger.log("任务已被取消", level="warning")
+            logger.finish(TASK_STATUS_CANCELLED, error="用户取消")
+            return
+
+        # 获取账号信息
+        try:
+            with Session(engine) as session:
+                model = session.get(AccountModel, int(account_id))
+                if not model:
+                    logger.record_error(f"账号 ID={account_id} 不存在")
+                    logger.log(f"✗ 账号 ID={account_id} 不存在", level="error")
+                    fail_count += 1
+                    completed += 1
+                    logger.set_progress(completed, total)
+                    continue
+                email = model.email
+                password = model.password or ""
+                
+                from core.platform_accounts import build_platform_account
+                account_dto = build_platform_account(session, model)
+                extra = dict(account_dto.extra or {})
+        except Exception as exc:
+            logger.record_error(f"获取账号信息失败: {exc}")
+            logger.log(f"✗ 获取账号 ID={account_id} 信息失败: {exc}", level="error")
+            fail_count += 1
+            completed += 1
+            logger.set_progress(completed, total)
+            continue
+
+        if not password:
+            logger.record_error(f"{email}: 密码为空，跳过")
+            logger.log(f"✗ {email}: 密码为空，无法自动登录", level="error")
+            fail_count += 1
+            completed += 1
+            logger.set_progress(completed, total)
+            continue
+
+        logger.log(f"\n{'='*50}")
+        logger.log(f"📌 开始第 {idx+1}/{total} 个: {email}")
+        logger.log(f"{'='*50}")
+
+        try:
+            # 从 provider_resources 中寻找 mailbox 绑定
+            provider_resources = extra.get("provider_resources", [])
+            mailbox_resource = next((r for r in provider_resources if r.get("provider_type") == "mailbox"), None)
+            
+            mail_provider = mailbox_resource.get("provider_name") if mailbox_resource else extra.get("mail_provider")
+            mailbox = None
+            if mail_provider:
+                from core.base_mailbox import create_mailbox, MailboxAccount
+                try:
+                    mailbox = create_mailbox(mail_provider, extra=extra)
+                except Exception as mb_exc:
+                    logger.log(f"⚠️ 初始化邮箱服务失败，可能无法处理自动登录验证码: {mb_exc}", level="warning")
+
+            def _otp_callback():
+                if not mailbox:
+                    return None
+                
+                account_id = ""
+                if mailbox_resource:
+                    account_id = mailbox_resource.get("resource_identifier", "")
+                    if not account_id:
+                        account_id = (mailbox_resource.get("metadata") or {}).get("account_id", "")
+                if not account_id and extra.get("mailbox_token"):
+                    account_id = extra.get("mailbox_token")
+                    
+                acc_extra = dict(extra)
+                if mail_provider:
+                    acc_extra["mailbox_provider_key"] = mail_provider
+                acc = MailboxAccount(email=email, account_id=account_id, extra=acc_extra)
+                logger.log("💬 正在等待 Adobe 邮箱验证码...")
+                try:
+                    # 使用较长的超时时间，内部本身会轮询
+                    code = mailbox.wait_for_code(acc, timeout=90, keyword="adobe")
+                    if code:
+                        return {"body": code}
+                except Exception as e:
+                    logger.log(f"⚠️ 无法获取验证码: {e}", level="warning")
+                return None
+
+            import time
+            from datetime import datetime
+            time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # 任务名称+时间文件夹，再分不同账号存放
+            screenshot_dir = f"/app/logs/subscribe_{time_str}/{email}"
+            try:
+                import os
+                os.makedirs(screenshot_dir, exist_ok=True)
+            except Exception as e:
+                logger.log(f"无法创建截图目录: {e}", level="warning")
+                screenshot_dir = None
+
+            subscriber = AdobeBrowserSubscribe(
+                headless=headless,
+                log_fn=logger.log,
+                otp_callback=_otp_callback,
+                screenshot_dir=screenshot_dir,
+            )
+            result = subscriber.run(
+                email=email,
+                password=password,
+                card_number=card_data.get("card_number", ""),
+                exp_month=card_data.get("exp_month", ""),
+                exp_year=card_data.get("exp_year", ""),
+                cvc=card_data.get("cvc", ""),
+            )
+
+            if result.success:
+                success_count += 1
+                logger.record_success()
+                logger.log(f"✓ {email}: 订阅成功 — {result.message}")
+            else:
+                fail_count += 1
+                error_msg = f"{email}: {result.message} (阶段: {result.stage})"
+                logger.record_error(error_msg)
+                logger.log(f"✗ {error_msg}", level="error")
+                if result.error:
+                    logger.log(f"  错误详情: {result.error}", level="error")
+
+        except Exception as exc:
+            fail_count += 1
+            error_msg = f"{email}: 意外异常 — {exc}"
+            logger.record_error(error_msg)
+            logger.log(f"✗ {error_msg}", level="error")
+            logger.log(f"  {traceback.format_exc()}", level="error")
+
+        completed += 1
+        logger.set_progress(completed, total)
+
+    # 汇总
+    logger.log(f"\n{'='*50}")
+    logger.log(f"📊 订阅完成: 成功 {success_count}/{total}，失败 {fail_count}/{total}")
+    logger.log(f"{'='*50}")
+
+    logger.set_result_data({
+        "total": total,
+        "success": success_count,
+        "failed": fail_count,
+    })
+    logger.finish(TASK_STATUS_SUCCEEDED if success_count > 0 else TASK_STATUS_FAILED,
+                  error=f"成功 {success_count}/{total}" if fail_count > 0 else "")

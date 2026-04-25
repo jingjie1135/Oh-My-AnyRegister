@@ -16,31 +16,34 @@ class ProviderDefinitionsRepository:
     # ── seeding（仅首次初始化） ──────────────────────────────────────
 
     def ensure_seeded(self) -> None:
-        """如果数据库中没有 BUILTIN 数据，则从 seeds.py 中加载模板。"""
+        """如果数据库中有缺失的 BUILTIN 数据，则从 seeds.py 中加载模板补充。"""
         from infrastructure.seeds import ALL_SEEDS
 
         with Session(engine) as session:
-            # 检查是否已有内置数据
-            existing = session.exec(
+            existing_items = session.exec(
                 select(ProviderDefinitionModel).where(ProviderDefinitionModel.is_builtin == True)
-            ).first()
-            if existing:
-                return
-
-            print(f"[Seed] 正在初始化 {len(ALL_SEEDS)} 个内置 Provider 驱动模板...")
+            ).all()
+            existing_keys = {item.provider_key for item in existing_items}
+            
+            added_count = 0
             for data in ALL_SEEDS:
-                m = ProviderDefinitionModel(
-                    provider_type=data["provider_type"],
-                    provider_key=data["provider_key"],
-                    label=data["label"],
-                    driver_type=data["driver_type"],
-                    is_builtin=True,
-                )
-                m.set_fields(data.get("fields", []))
-                m.created_at = _utcnow()
-                m.updated_at = _utcnow()
-                session.add(m)
-            session.commit()
+                if data["provider_key"] not in existing_keys:
+                    m = ProviderDefinitionModel(
+                        provider_type=data["provider_type"],
+                        provider_key=data["provider_key"],
+                        label=data["label"],
+                        driver_type=data["driver_type"],
+                        is_builtin=True,
+                    )
+                    m.set_fields(data.get("fields", []))
+                    m.created_at = _utcnow()
+                    m.updated_at = _utcnow()
+                    session.add(m)
+                    added_count += 1
+                    
+            if added_count > 0:
+                print(f"[Seed] 补充初始化 {added_count} 个内置 Provider 驱动模板...")
+                session.commit()
 
     # ── 查询（全部从 DB） ────────────────────────────────────────────
 
