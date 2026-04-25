@@ -233,6 +233,16 @@ def _create_generic_http(extra: dict, proxy: str | None, *, pipeline_config: dic
     )
 
 
+def _create_private_api(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    return PrivateApiMailbox(
+        api_url=extra.get("private_api_url", ""),
+        admin_email=extra.get("private_api_admin_email", ""),
+        admin_password=extra.get("private_api_admin_password", ""),
+        domain=extra.get("private_api_domain", ""),
+        proxy=proxy,
+    )
+
+
 MAILBOX_FACTORY_REGISTRY = {
     "generic_http_mailbox": _create_generic_http,
     "tempmail_lol_api": _create_tempmail,
@@ -243,6 +253,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "cfworker_admin_api": _create_cfworker,
     "testmail_api": _create_testmail,
     "laoudo_api": _create_laoudo,
+    "private_api": _create_private_api,
     # backward-compat fallback
     "generic_http": _create_generic_http,
     "tempmail_lol": _create_tempmail,
@@ -1584,6 +1595,231 @@ class FreemailMailbox(BaseMailbox):
                     link = _extract_verification_link(text, keyword)
                     if link:
                         return link
+            except Exception:
+                pass
+            time.sleep(3)
+        raise TimeoutError(f"等待验证链接超时 ({timeout}s)")
+
+
+class PrivateApiMailbox(BaseMailbox):
+    """自建私有邮箱服务 (通过 API 接口: 登录获取 Token -> 添加用户 -> 邮件列表)"""
+
+    def __init__(self, api_url: str, admin_email: str = "", admin_password: str = "", domain: str = "", proxy: str = None):
+        # 自动补全协议前缀，避免用户忘记填写 http:// 或 https://
+        url = api_url.strip().rstrip("/")
+        if url and not url.startswith(("http://", "https://")):
+            url = f"http://{url}"
+        self.api = url
+        self.admin_email = admin_email
+        self.admin_password = admin_password
+        self.domain = domain
+        self.proxy = {"http": proxy, "https": proxy} if proxy else None
+        self._token = None
+        self._session = None
+
+    def _get_session(self):
+        if self._session:
+            return self._session
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        s = requests.Session()
+        s.proxies = self.proxy
+        s.verify = False  # 忽略部分自建 API 的 SSL 证书问题
+        s.max_redirects = 3
+        self._session = s
+        return s
+
+    def _post(self, path: str, **kwargs):
+        """发送 POST 请求，自动处理 SSL 失败和协议降级"""
+        import requests
+        s = self._get_session()
+        url = f"{self.api}{path}"
+        kwargs.setdefault("timeout", 15)
+        
+        # 第一次尝试：直接请求（可能是 http 或 https）
+        try:
+            r = s.post(url, **kwargs)
+            return r
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as first_err:
+            pass
+        
+        # 第二次尝试：如果是 https 失败，降级为 http；如果是 http 失败，升级为 https
+        if url.startswith("https://"):
+            fallback_url = url.replace("https://", "http://", 1)
+        elif url.startswith("http://"):
+            fallback_url = url.replace("http://", "https://", 1)
+        else:
+            raise first_err
+        
+        try:
+            r = s.post(fallback_url, allow_redirects=False, **kwargs)
+            # 如果返回 302 跳转且目标又是坏的 HTTPS，我们直接用当前响应
+            # (某些服务器虽然 302，但实际已经处理了请求)
+            if r.status_code in (200, 201):
+                return r
+            # 如果 302 跳转，尝试跟随但忽略 SSL
+            if r.status_code in (301, 302, 307, 308):
+                location = r.headers.get("Location", "")
+                if location:
+                    try:
+                        r2 = s.post(location, **kwargs)
+                        return r2
+                    except requests.exceptions.SSLError:
+                        # SSL 还是失败，说明这台服务器确实有证书问题
+                        raise RuntimeError(
+                            f"服务器 SSL 证书配置有误，无法连接。"
+                            f"请在服务器控制面板中为 {self.api} 配置有效的 SSL 证书，"
+                            f"或者将 API 地址改为 http:// 并关闭强制 HTTPS 跳转。"
+                        )
+            return r
+        except requests.exceptions.SSLError:
+            raise RuntimeError(
+                f"服务器 SSL 证书配置有误，无法连接。"
+                f"请在服务器控制面板中为 {self.api} 配置有效的 SSL 证书，"
+                f"或者将 API 地址改为 http:// 并关闭强制 HTTPS 跳转。"
+            )
+
+    def _ensure_token(self):
+        if self._token:
+            return self._token
+        s = self._get_session()
+        r = self._post("/api/public/genToken", json={
+            "email": self.admin_email,
+            "password": self.admin_password
+        })
+        data = r.json()
+        if data.get("code") == 200:
+            token = data["data"]["token"]
+            self._token = token
+            s.headers.update({"Authorization": token})
+            return token
+        raise RuntimeError(f"PrivateApiMailbox 登录失败: {data.get('message')}")
+
+    def get_email(self) -> MailboxAccount:
+        import random, string
+        self._ensure_token()
+        s = self._get_session()
+        
+        prefix = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        domain = self.domain or "example.com"
+        email = f"{prefix}@{domain}"
+        
+        # 经过实测探测，该 API 实际需要的结构是带 list 的，且邮箱需要全称
+        payload = {
+            "adminEmail": self.admin_email,
+            "adminPassword": self.admin_password,
+            "list": [
+                {
+                    "email": email, 
+                    "password": "".join(random.choices(string.ascii_letters + string.digits, k=12))
+                }
+            ]
+        }
+        r = self._post("/api/public/addUser", json=payload)
+        data = r.json()
+        if data.get("code") != 200:
+            raise RuntimeError(f"PrivateApiMailbox 添加用户失败: {data.get('message', r.text)}")
+            
+        print(f"[PrivateApi] 生成邮箱: {email}")
+        return MailboxAccount(
+            email=email,
+            account_id=email,
+            extra={
+                "provider_resource": {
+                    "provider_type": "mailbox",
+                    "provider_name": "private_api",
+                    "resource_type": "mailbox",
+                    "resource_identifier": email,
+                    "handle": email,
+                    "display_name": email,
+                    "metadata": {
+                        "email": email,
+                        "api_url": self.api,
+                    },
+                },
+            },
+        )
+
+    def get_current_ids(self, account: MailboxAccount) -> set:
+        try:
+            self._ensure_token()
+            s = self._get_session()
+            r = self._post("/api/public/emailList", json={
+                "toEmail": account.email,
+                "size": 50,
+            }, timeout=10)
+            data = r.json()
+            if data.get("code") == 200:
+                results = data.get("data", [])
+                return {str(m.get("emailId", "")) for m in results if m.get("emailId")}
+        except Exception:
+            pass
+        return set()
+
+    def wait_for_code(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None, code_pattern: str = None) -> str:
+        import re, time
+        seen = set(before_ids or [])
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                self._ensure_token()
+                s = self._get_session()
+                r = self._post("/api/public/emailList", json={
+                    "toEmail": account.email,
+                    "size": 20,
+                    "timeSort": "desc"
+                }, timeout=10)
+                data = r.json()
+                if data.get("code") == 200:
+                    for msg in data.get("data", []):
+                        mid = str(msg.get("emailId", ""))
+                        if not mid or mid in seen:
+                            continue
+                        seen.add(mid)
+                        
+                        text = str(msg.get("content") or "") + " " + str(msg.get("text") or "") + " " + str(msg.get("subject") or "")
+                        if keyword and keyword.lower() not in text.lower():
+                            continue
+                            
+                        # 兜底：从正文提取验证码
+                        pattern = re.compile(code_pattern) if code_pattern else re.compile(r"(?<!\d)(\d{6})(?!\d)")
+                        m = pattern.search(text)
+                        if m:
+                            return m.group(1) if m.groups() else m.group(0)
+            except Exception:
+                pass
+            time.sleep(3)
+        raise TimeoutError(f"等待验证码超时 ({timeout}s)")
+        
+    def wait_for_link(self, account: MailboxAccount, keyword: str = "",
+                      timeout: int = 120, before_ids: set = None) -> str:
+        import time
+        seen = set(before_ids or [])
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                self._ensure_token()
+                s = self._get_session()
+                r = self._post("/api/public/emailList", json={
+                    "toEmail": account.email,
+                    "size": 20,
+                    "timeSort": "desc"
+                }, timeout=10)
+                data = r.json()
+                if data.get("code") == 200:
+                    for msg in data.get("data", []):
+                        mid = str(msg.get("emailId", ""))
+                        if not mid or mid in seen:
+                            continue
+                        seen.add(mid)
+                        
+                        text = str(msg.get("content") or "") + " " + str(msg.get("text") or "") + " " + str(msg.get("subject") or "")
+                        link = _extract_verification_link(text, keyword)
+                        if link:
+                            return link
             except Exception:
                 pass
             time.sleep(3)

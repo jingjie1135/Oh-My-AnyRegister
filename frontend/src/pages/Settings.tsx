@@ -6,7 +6,7 @@ import { apiFetch } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
-import { Save, Eye, EyeOff, Mail, Shield, Cpu, RefreshCw, CheckCircle, XCircle, Sliders, Plus, X, Orbit, Package2, Sparkles, MessageSquare } from 'lucide-react'
+import { Save, Eye, EyeOff, Mail, Shield, Cpu, RefreshCw, CheckCircle, XCircle, Sliders, Plus, X, Orbit, Package2, Sparkles, MessageSquare, CreditCard, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const PROVIDER_TYPES = ['mailbox', 'captcha', 'sms'] as const
@@ -272,6 +272,10 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
     sections: [],
   },
   {
+    id: 'payment', label: '支付配置', icon: CreditCard,
+    sections: [],
+  },
+  {
     id: 'chatgpt', label: 'ChatGPT', icon: Shield,
     sections: [{
       section: 'CPA 面板',
@@ -453,6 +457,90 @@ function HeroSmsTools({ item }: { item: ProviderSetting }) {
   )
 }
 
+function MailboxTestTools({ item }: { item: ProviderSetting }) {
+  const [loading, setLoading] = useState('')
+  const [message, setMessage] = useState('')
+  const [testEmail, setTestEmail] = useState('')
+  const [testAccountId, setTestAccountId] = useState('')
+
+  const payload = (action: string) => ({
+    action,
+    provider_key: item.provider_key,
+    config: item.config || {},
+    auth: item.auth || {},
+    email: testEmail,
+    account_id: testAccountId,
+  })
+
+  const generateEmail = async () => {
+    setLoading('generate')
+    setMessage('')
+    try {
+      const data = await apiFetch('/provider-settings/test-mailbox', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload('generate')),
+      })
+      setTestEmail(data.email)
+      setTestAccountId(data.account_id)
+      setMessage(`邮箱已生成: ${data.email}，请向此邮箱发送一封包含验证码的测试邮件。`)
+    } catch (e: any) {
+      setMessage(e.message || '生成邮箱失败')
+    } finally {
+      setLoading('')
+    }
+  }
+
+  const waitCode = async () => {
+    setLoading('wait_code')
+    setMessage('正在获取验证码/链接 (最长 15 秒)...')
+    try {
+      const data = await apiFetch('/provider-settings/test-mailbox', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload('wait_code')),
+      })
+      setMessage(`获取成功: ${data.code}`)
+    } catch (e: any) {
+      setMessage(e.message || '获取验证码失败 (可能是超时)')
+    } finally {
+      setLoading('')
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-3 text-xs text-[var(--text-secondary)]">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="font-medium text-[var(--text-primary)]">邮箱连通性测试</div>
+            <div className="mt-1 text-[var(--text-muted)]">点击生成测试邮箱，利用当前配置的参数进行可用性测试。</div>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={generateEmail} disabled={Boolean(loading)}>
+              {loading === 'generate' ? '生成中...' : '1. 生成测试邮箱'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={waitCode} disabled={!testEmail || Boolean(loading)}>
+              {loading === 'wait_code' ? '等待中...' : '2. 接收验证码'}
+            </Button>
+          </div>
+        </div>
+        
+        {(message || testEmail) && (
+          <div className="flex flex-col gap-1 rounded bg-black/20 p-2 text-[11px]">
+            {testEmail && <div><span className="opacity-50">分配邮箱:</span> {testEmail}</div>}
+            {message && <div className="text-emerald-400">{message}</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ProviderDetailModal({
   title,
   item,
@@ -494,6 +582,9 @@ function ProviderDetailModal({
           ) : null}
           {item.provider_type === 'sms' && item.provider_key === 'herosms' ? (
             <HeroSmsTools item={item} />
+          ) : null}
+          {item.provider_type === 'mailbox' ? (
+            <MailboxTestTools item={item} />
           ) : null}
           <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5">
             <label className="text-sm text-[var(--text-secondary)] font-medium">配置名称</label>
@@ -776,6 +867,159 @@ function CreateProviderDefinitionModal({
           <Button variant="outline" onClick={onClose} className="flex-1">取消</Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── 虚拟卡管理标签页 ──────────────────────────────────────────────
+function VirtualCardTab() {
+  const [cards, setCards] = useState<any[]>([])
+  const [showAdd, setShowAdd] = useState(false)
+  const [editingCard, setEditingCard] = useState<any | null>(null)
+  
+  const [form, setForm] = useState({
+    card_number: '',
+    exp_month: '',
+    exp_year: '',
+    cvc: '',
+    label: ''
+  })
+
+  const load = () => {
+    apiFetch('/virtual-cards').then(setCards)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const save = async () => {
+    try {
+      const url = editingCard ? `/virtual-cards/${editingCard.id}` : '/virtual-cards'
+      const method = editingCard ? 'PUT' : 'POST'
+      await apiFetch(url, {
+        method,
+        body: JSON.stringify(form)
+      })
+      setShowAdd(false)
+      setEditingCard(null)
+      setForm({ card_number: '', exp_month: '', exp_year: '', cvc: '', label: '' })
+      load()
+    } catch (e: any) {
+      window.alert(e.message)
+    }
+  }
+
+  const remove = async (id: number) => {
+    if (!window.confirm('确定要删除这张卡吗？')) return
+    try {
+      await apiFetch(`/virtual-cards/${id}`, { method: 'DELETE' })
+      load()
+    } catch (e: any) {
+      window.alert(e.message)
+    }
+  }
+
+  const edit = (card: any) => {
+    setEditingCard(card)
+    setForm({
+      card_number: '', // 编辑时不回填完整卡号
+      exp_month: card.exp_month,
+      exp_year: card.exp_year,
+      cvc: '',
+      label: card.label
+    })
+    setShowAdd(true)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-[22px] border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm text-[var(--text-secondary)]">
+        这里配置的虚拟卡将用于 Adobe Firefly 等平台的自动订阅。系统会自动生成随机的美国账单地址。
+      </div>
+
+      <div className="rounded-[24px] border border-[var(--border)] bg-[var(--bg-pane)]/56 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">虚拟卡列表</h3>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">共 {cards.length} 张可用卡片</p>
+          </div>
+          <Button size="sm" onClick={() => { setEditingCard(null); setForm({ card_number: '', exp_month: '', exp_year: '', cvc: '', label: '' }); setShowAdd(true) }}>
+            <Plus className="h-3.5 w-3.5 mr-1" />
+            添加虚拟卡
+          </Button>
+        </div>
+
+        {cards.length === 0 ? (
+          <div className="empty-state-panel py-12">暂无虚拟卡配置</div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {cards.map(card => (
+              <div key={card.id} className="group relative rounded-2xl border border-[var(--border)] bg-[var(--bg-hover)]/30 p-4 hover:border-[var(--accent)] transition-all">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+                      <CreditCard className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold text-[var(--text-primary)]">{card.label || '未命名卡片'}</div>
+                      <div className="font-mono text-xs text-[var(--text-muted)] mt-0.5">{card.masked_number} · {card.exp_month}/{card.exp_year}</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => edit(card)} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)]"><Sliders className="h-4 w-4" /></button>
+                    <button onClick={() => remove(card.id)} className="p-1.5 text-[var(--text-muted)] hover:text-red-400"><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {showAdd && (
+        <div className="dialog-backdrop" onClick={() => setShowAdd(false)}>
+          <div className="dialog-panel dialog-panel-sm" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                {editingCard ? '编辑虚拟卡' : '添加虚拟卡'}
+              </h2>
+              <button onClick={() => setShowAdd(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="text-xs text-[var(--text-muted)] block mb-1.5">自定义标签</label>
+                <input value={form.label} onChange={e => setForm({ ...form, [ 'label' ]: e.target.value })} 
+                  placeholder="例如: 我的主力卡" className="control-surface" />
+              </div>
+              <div>
+                <label className="text-xs text-[var(--text-muted)] block mb-1.5">卡号 (16位)</label>
+                <input value={form.card_number} onChange={e => setForm({ ...form, [ 'card_number' ]: e.target.value.replace(/\s+/g, '') })} 
+                  placeholder={editingCard ? '保持空则不修改' : '1234 5678 1234 5678'} className="control-surface font-mono" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-[var(--text-muted)] block mb-1.5">有效期 (MM/YY)</label>
+                  <div className="flex items-center gap-2">
+                    <input value={form.exp_month} onChange={e => setForm({ ...form, [ 'exp_month' ]: e.target.value })} 
+                      placeholder="MM" className="control-surface text-center" maxLength={2} />
+                    <span className="text-[var(--text-muted)]">/</span>
+                    <input value={form.exp_year} onChange={e => setForm({ ...form, [ 'exp_year' ]: e.target.value })} 
+                      placeholder="YY" className="control-surface text-center" maxLength={2} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-[var(--text-muted)] block mb-1.5">安全码 (CVC)</label>
+                  <input value={form.cvc} onChange={e => setForm({ ...form, [ 'cvc' ]: e.target.value })} 
+                    placeholder="123" className="control-surface font-mono" maxLength={4} />
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3 px-6 py-4 border-t border-[var(--border)]">
+              <Button onClick={save} className="flex-1">确定保存</Button>
+              <Button variant="outline" onClick={() => setShowAdd(false)} className="flex-1">取消</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1375,6 +1619,8 @@ export default function Settings() {
         <div className="space-y-4">
           {activeTab === 'platform_caps' ? (
             <PlatformCapsTab />
+          ) : activeTab === 'payment' ? (
+            <VirtualCardTab />
           ) : (
             <>
               {activeTab === 'register' && (

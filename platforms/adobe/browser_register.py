@@ -315,6 +315,12 @@ class AdobeBrowserRegister:
             self.log("[Adobe] 4. 提交注册...")
             url_before = self.page.url
             
+            # 检测是否有错误提示
+            for err_text in ['不允许使用此电子邮件地址', '不符合我们的要求', 'Please use another email address', 'not permitted']:
+                err_ele = self.page.ele(f'text:{err_text}', timeout=1)
+                if err_ele and err_ele.states.is_displayed:
+                    raise Exception(f"暂不支持该邮箱域名: {err_ele.text}")
+            
             submit_btn = self.page.ele('tag:button@@text():创建帐户', timeout=2) or self.page.ele('tag:button@@text():Create account', timeout=2)
             if submit_btn and submit_btn.states.is_displayed:
                 submit_btn.scroll.to_see()
@@ -361,10 +367,19 @@ class AdobeBrowserRegister:
                     code_found = False
                     start_otp = time.time()
                     while time.time() - start_otp < 120 and not code_found:
-                        content_dict = self._otp_callback()
-                        if content_dict and isinstance(content_dict, dict):
-                            body = content_dict.get('html_body') or content_dict.get('body') or ""
-                            code = self.extract_otp_code(body)
+                        result = self._otp_callback()
+                        if result:
+                            # 兼容两种回调返回值：
+                            # 1. 字符串 → 直接就是验证码 (来自 build_otp_callback / wait_for_code)
+                            # 2. dict → 包含 html_body/body 的原始邮件内容
+                            if isinstance(result, str):
+                                code = result.strip()
+                            elif isinstance(result, dict):
+                                body = result.get('html_body') or result.get('body') or ""
+                                code = self.extract_otp_code(body)
+                            else:
+                                code = ""
+                            
                             if code:
                                 self.log(f"🔑 拦截到验证码: {code}")
                                 code_inputs = self.page.eles('input[maxlength="1"]', timeout=3)

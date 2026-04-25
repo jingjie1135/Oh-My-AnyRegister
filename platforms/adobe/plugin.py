@@ -77,6 +77,9 @@ class AdobePlatform(BasePlatform):
     def get_platform_actions(self) -> list:
         return [
             {"id": "get_account_state", "label": "查询账号状态", "params": []},
+            {"id": "subscribe_pro_plus", "label": "订阅 Pro Plus 试用", "params": [
+                {"key": "card_id", "label": "虚拟卡 ID", "type": "number", "required": True},
+            ]},
         ]
 
     def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
@@ -86,6 +89,33 @@ class AdobePlatform(BasePlatform):
                 "data": {
                     "valid": True,
                     "message": "暂未实现用量查询"
+                }
+            }
+        if action_id == "subscribe_pro_plus":
+            # 单账号订阅通过 batch-subscribe API 执行
+            card_id = params.get("card_id")
+            if not card_id:
+                return {"ok": False, "data": {"message": "请提供虚拟卡 ID"}}
+            from core.virtual_card import get_virtual_card
+            card = get_virtual_card(int(card_id))
+            if not card:
+                return {"ok": False, "data": {"message": "虚拟卡不存在"}}
+            from platforms.adobe.browser_subscribe import AdobeBrowserSubscribe
+            worker = AdobeBrowserSubscribe(headless=False)
+            result = worker.run(
+                email=account.email,
+                password=account.password,
+                card_number=card.card_number,
+                exp_month=card.exp_month,
+                exp_year=card.exp_year,
+                cvc=card.cvc,
+            )
+            return {
+                "ok": result.success,
+                "data": {
+                    "message": result.message,
+                    "stage": result.stage,
+                    "error": result.error,
                 }
             }
         raise NotImplementedError(f"未知操作: {action_id}")
