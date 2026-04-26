@@ -50,6 +50,32 @@ class AdobePlatform(BasePlatform):
             extra=result.get("extra", {})
         )
 
+    def _build_subscribe_otp_callback(self, account: Account):
+        """为订阅动作构造邮箱验证码回调。"""
+        if not self.mailbox:
+            return None
+
+        mailbox_info = dict((account.extra or {}).get("verification_mailbox") or {})
+        mailbox_account = __import__("core.base_mailbox", fromlist=["MailboxAccount"]).MailboxAccount(
+            email=mailbox_info.get("email") or account.email,
+            account_id=str(mailbox_info.get("account_id") or ""),
+            extra={
+                "mailbox_provider_key": mailbox_info.get("provider") or (self.config.extra or {}).get("mail_provider", ""),
+                "provider_account": (account.extra or {}).get("provider_account", {}),
+                "provider_resource": (account.extra or {}).get("provider_resource", {}),
+            },
+        )
+
+        def _otp_callback() -> str:
+            return self.mailbox.wait_for_code(
+                mailbox_account,
+                keyword="Adobe",
+                timeout=120,
+                code_pattern=r"(?<!#)(?<!\d)(\d{6})(?!\d)",
+            )
+
+        return _otp_callback
+
     def build_browser_registration_adapter(self):
         return BrowserRegistrationAdapter(
             result_mapper=lambda ctx, result: self._map_mailbox_result(result),
@@ -101,7 +127,11 @@ class AdobePlatform(BasePlatform):
             if not card:
                 return {"ok": False, "data": {"message": "虚拟卡不存在"}}
             from platforms.adobe.browser_subscribe import AdobeBrowserSubscribe
-            worker = AdobeBrowserSubscribe(headless=False)
+            worker = AdobeBrowserSubscribe(
+                headless=False,
+                otp_callback=self._build_subscribe_otp_callback(account),
+                log_fn=self.log,
+            )
             result = worker.run(
                 email=account.email,
                 password=account.password,
