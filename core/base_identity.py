@@ -69,19 +69,19 @@ class BaseIdentityProvider(ABC):
         self.extra = extra or {}
 
     @abstractmethod
-    def resolve(self, requested_email: Optional[str] = None) -> IdentityMaterial:
+    def resolve(self, requested_email: Optional[str] = None, requested_password: Optional[str] = None) -> IdentityMaterial:
         ...
 
 
 class MailboxIdentityProvider(BaseIdentityProvider):
     identity_provider = "mailbox"
 
-    def resolve(self, requested_email: Optional[str] = None) -> IdentityMaterial:
+    def resolve(self, requested_email: Optional[str] = None, requested_password: Optional[str] = None) -> IdentityMaterial:
         requested_email = (requested_email or "").strip()
         if not self.mailbox:
             return IdentityMaterial(identity_provider=self.identity_provider, email=requested_email)
 
-        mail_acct = self.mailbox.get_email()
+        mail_acct = self.mailbox.get_email(requested_password=requested_password)
         email = getattr(mail_acct, "email", "") or ""
         if not requested_email and not email:
             provider_name = getattr(self.mailbox, "__class__", type(self.mailbox)).__name__
@@ -100,7 +100,7 @@ class MailboxIdentityProvider(BaseIdentityProvider):
 class BrowserOAuthIdentityProvider(BaseIdentityProvider):
     identity_provider = "oauth_browser"
 
-    def resolve(self, requested_email: Optional[str] = None) -> IdentityMaterial:
+    def resolve(self, requested_email: Optional[str] = None, requested_password: Optional[str] = None) -> IdentityMaterial:
         email = (requested_email or self.extra.get("oauth_email_hint", "") or "").strip()
         oauth_provider = normalize_oauth_provider(
             self.extra.get("oauth_provider") or self.extra.get("default_oauth_provider")

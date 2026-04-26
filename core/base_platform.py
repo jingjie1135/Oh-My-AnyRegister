@@ -116,7 +116,7 @@ class BasePlatform(ABC):
 
     def register(self, email: str = None, password: str = None) -> Account:
         resolved_password = self._prepare_registration_password(password)
-        identity = self._resolve_identity(email, require_email=self._should_require_identity_email())
+        identity = self._resolve_identity(email, require_email=self._should_require_identity_email(), requested_password=resolved_password)
         ctx = RegistrationContext(
             platform_name=self.name,
             platform_display_name=self.display_name,
@@ -319,8 +319,8 @@ class BasePlatform(ABC):
             extra=self.config.extra,
         )
 
-    def _resolve_identity(self, email: str = None, *, require_email: bool = True):
-        identity = self._get_identity_provider().resolve(email)
+    def _resolve_identity(self, email: str = None, *, require_email: bool = True, requested_password: str | None = None):
+        identity = self._get_identity_provider().resolve(email, requested_password=requested_password)
         self._last_identity = identity
         if require_email and not identity.email:
             raise ValueError(

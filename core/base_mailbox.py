@@ -23,7 +23,7 @@ class MailboxAccount:
 
 class BaseMailbox(ABC):
     @abstractmethod
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         """获取一个可用邮箱"""
         ...
 
@@ -73,7 +73,7 @@ class FallbackMailbox(BaseMailbox):
             return mailbox
         raise RuntimeError(f"未找到邮箱 provider 上下文: {account.email}")
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         errors: list[str] = []
         for provider_key, mailbox in self.providers:
             try:
@@ -289,16 +289,10 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
     elif isinstance(raw_fallbacks, (list, tuple, set)):
         explicit_fallbacks = [str(item or "").strip() for item in raw_fallbacks if str(item or "").strip()]
 
-    enabled_items = settings_repo.list_enabled("mailbox")
-    enabled_keys = [str(item.provider_key or "").strip() for item in enabled_items if str(item.provider_key or "").strip()]
     ordered_keys: list[str] = [provider_key]
     for key in explicit_fallbacks:
         if key not in ordered_keys:
             ordered_keys.append(key)
-    for key in enabled_keys:
-        if key == provider_key or key == "laoudo" or key in ordered_keys:
-            continue
-        ordered_keys.append(key)
 
     providers: list[tuple[str, BaseMailbox]] = []
     for key in ordered_keys:
@@ -332,7 +326,7 @@ class LaoudoMailbox(BaseMailbox):
         self.api = (api_url or DEFAULT_LAOUDO_API_URL).rstrip("/")
         self._ua = "Mozilla/5.0"
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         return MailboxAccount(
             email=self._email,
             account_id=self._account_id,
@@ -455,7 +449,7 @@ class AitreMailbox(BaseMailbox):
         self._email = email
         self.api = (api_url or DEFAULT_AITRE_API_URL).rstrip("/")
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         return MailboxAccount(email=self._email)
 
     def get_current_ids(self, account: MailboxAccount) -> set:
@@ -539,7 +533,7 @@ class TempMailLolMailbox(BaseMailbox):
         self._token = None
         self._email = None
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import requests
         r = requests.post(f"{self.api}/inbox/create",
             json={},
@@ -747,7 +741,7 @@ class TempMailWebMailbox(BaseMailbox):
 
         return self._decode_json_response(result, action)
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import json
 
         data = self._request_json("POST", "/mailbox")
@@ -913,7 +907,7 @@ class DuckMailMailbox(BaseMailbox):
             "x-api-provider-base-url": self.provider_url,
         }
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import requests, random, string
         username = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
         password = "Test" + "".join(random.choices(string.digits, k=8)) + "!"
@@ -1066,7 +1060,7 @@ class CFWorkerMailbox(BaseMailbox):
             h["x-fingerprint"] = self.fingerprint
         return h
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import requests, random, string
         name = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
         payload = {"enablePrefix": True, "name": name}
@@ -1323,7 +1317,7 @@ class MoeMailMailbox(BaseMailbox):
     # 优先用这些域名（信誉较好，不易被 AWS/Google 等拒绝）
     _PREFERRED_DOMAINS = ("sall.cc", "cnmlgb.de", "zhooo.org", "coolkid.icu")
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         self._session_token = self._configured_session_token or None
         self._session = None
         self._ensure_session()
@@ -1494,7 +1488,7 @@ class FreemailMailbox(BaseMailbox):
         self._session = s
         return s
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         if not self._session:
             self._get_session()
         import requests
@@ -1639,11 +1633,12 @@ class PrivateApiMailbox(BaseMailbox):
         kwargs.setdefault("timeout", 15)
         
         # 第一次尝试：直接请求（可能是 http 或 https）
+        first_err = None
         try:
             r = s.post(url, **kwargs)
             return r
-        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as first_err:
-            pass
+        except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as exc:
+            first_err = exc
         
         # 第二次尝试：如果是 https 失败，降级为 http；如果是 http 失败，升级为 https
         if url.startswith("https://"):
@@ -1697,7 +1692,7 @@ class PrivateApiMailbox(BaseMailbox):
             return token
         raise RuntimeError(f"PrivateApiMailbox 登录失败: {data.get('message')}")
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import random, string
         self._ensure_token()
         s = self._get_session()
@@ -1706,6 +1701,8 @@ class PrivateApiMailbox(BaseMailbox):
         domain = self.domain or "example.com"
         email = f"{prefix}@{domain}"
         
+        mailbox_password = requested_password or "".join(random.choices(string.ascii_letters + string.digits, k=12))
+        
         # 经过实测探测，该 API 实际需要的结构是带 list 的，且邮箱需要全称
         payload = {
             "adminEmail": self.admin_email,
@@ -1713,7 +1710,7 @@ class PrivateApiMailbox(BaseMailbox):
             "list": [
                 {
                     "email": email, 
-                    "password": "".join(random.choices(string.ascii_letters + string.digits, k=12))
+                    "password": mailbox_password
                 }
             ]
         }
@@ -1722,11 +1719,12 @@ class PrivateApiMailbox(BaseMailbox):
         if data.get("code") != 200:
             raise RuntimeError(f"PrivateApiMailbox 添加用户失败: {data.get('message', r.text)}")
             
-        print(f"[PrivateApi] 生成邮箱: {email}")
+        print(f"[PrivateApi] 生成邮箱: {email} 邮箱密码: {mailbox_password}")
         return MailboxAccount(
             email=email,
             account_id=email,
             extra={
+                "password": mailbox_password,  # 暴露给顶层，使 UI 或后续流程可以获取
                 "provider_resource": {
                     "provider_type": "mailbox",
                     "provider_name": "private_api",
@@ -1736,6 +1734,7 @@ class PrivateApiMailbox(BaseMailbox):
                     "display_name": email,
                     "metadata": {
                         "email": email,
+                        "mailbox_password": mailbox_password,
                         "api_url": self.api,
                     },
                 },
@@ -1784,8 +1783,8 @@ class PrivateApiMailbox(BaseMailbox):
                         if keyword and keyword.lower() not in text.lower():
                             continue
                             
-                        # 兜底：从正文提取验证码
-                        pattern = re.compile(code_pattern) if code_pattern else re.compile(r"(?<!\d)(\d{6})(?!\d)")
+                        # 兜底：从正文提取验证码 (增加 (?<!#) 防止提取到 html 里的颜色代码，如 #123456)
+                        pattern = re.compile(code_pattern) if code_pattern else re.compile(r"(?<!#)(?<!\d)(\d{6})(?!\d)")
                         m = pattern.search(text)
                         if m:
                             return m.group(1) if m.groups() else m.group(0)
@@ -1897,7 +1896,7 @@ class TestmailMailbox(BaseMailbox):
             for key in ("subject", "text", "html")
         )
 
-    def get_email(self) -> MailboxAccount:
+    def get_email(self, requested_password: str | None = None) -> MailboxAccount:
         import time
 
         self._assert_ready()
