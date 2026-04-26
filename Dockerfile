@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # 浏览器运行依赖（Chromium）
     chromium chromium-driver \
     # 虚拟显示 + VNC
-    xvfb x11vnc \
+    xvfb x11vnc xclip \
     # noVNC 依赖
     novnc websockify \
     # Chromium/通用系统库

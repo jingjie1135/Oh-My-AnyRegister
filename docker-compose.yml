@@ -1,6 +1,8 @@
 services:
   app:
     build: .
+    init: true
+    shm_size: 2gb
     ports:
       - "8000:8000"   # FastAPI / Web UI
       - "6081:6080"   # noVNC (headed 浏览器预览)

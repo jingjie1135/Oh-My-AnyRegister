@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# 清理遗留的状态（锁文件和临时进程目录），防止重启后依然锁死
+rm -rf /tmp/.X*-lock /tmp/.X11-unix /tmp/.DrissionPage* /tmp/chrome* /tmp/chromium* 2>/dev/null || true
+
 # 启动虚拟显示
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
 export DISPLAY=:99
