@@ -399,6 +399,37 @@ class TestAdobeRegisterSubscribeLogin:
         assert main_page.frame.clicked_js
         assert worker.page is browser.login_tab
 
+    def test_login_entry_prefers_verified_firefly_header_sign_in_selector(self):
+        clicked_selectors = []
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = type("FakePage", (), {"get": lambda self, url: None})()
+        worker._wait_page_ready = lambda timeout=20: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._looks_logged_in = lambda: False
+        worker._current_tab_ids = lambda: []
+        worker._switch_to_new_tab_after_click = lambda before_tab_ids, timeout=2: False
+        worker._confirm_firefly_login_modal = lambda before_tab_ids: True
+
+        def click_first_visible(selectors, label, timeout=12):
+            clicked_selectors.extend(selectors)
+            return True
+
+        worker._click_first_visible = click_first_visible
+
+        worker._open_firefly_login_entry()
+
+        assert clicked_selectors[0] == '[data-test-id="unav-profile--sign-in"]'
+        assert '[data-testid="unav-profile--sign-in"]' in clicked_selectors
+
+    def test_confirm_login_modal_waits_long_enough_for_auth_light_sign_in(self):
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        captured = []
+        worker._click_auth_light_sign_in_link = lambda timeout=8: captured.append(timeout) or False
+
+        assert worker._confirm_firefly_login_modal(set()) is False
+        assert captured == [30]
+
     def test_create_account_entry_clicks_auth_light_iframe_create_account_link(self):
         class FakeIframe:
             def attr(self, name):

@@ -243,7 +243,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         return False
 
     def _confirm_firefly_login_modal(self, before_tab_ids: set) -> bool:
-        clicked = self._click_auth_light_sign_in_link(timeout=8)
+        clicked = self._click_auth_light_sign_in_link(timeout=30)
         if not clicked:
             return False
         return self._switch_to_new_tab_after_click(before_tab_ids, timeout=12)
@@ -258,6 +258,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
         before_tab_ids = set(self._current_tab_ids())
         clicked = self._click_first_visible([
+            '[data-test-id="unav-profile--sign-in"]',
+            '[data-testid="unav-profile--sign-in"]',
             'button.profile-comp.secondary-button',
             '.profile-comp.secondary-button',
             'button.profile-comp',
@@ -277,8 +279,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             'text:登录',
         ], "Firefly 真实登录入口", timeout=12)
         if clicked:
-            self._wait_page_ready(20)
-            self._delay(2, 3)
+            self._delay(1, 2)
             if self._switch_to_new_tab_after_click(before_tab_ids, timeout=2):
                 return
             self._confirm_firefly_login_modal(before_tab_ids)
