@@ -239,7 +239,48 @@ class AdobeBrowserRegister:
                 continue
         return None
 
+    def _current_browser_location(self) -> str:
+        """读取当前浏览器地址，优先用 JS 捕获 SPA hash 路由。"""
+        try:
+            href = self.page.run_js('return window.location.href || "";')
+            if href:
+                return str(href)
+        except Exception:
+            pass
+        try:
+            return str(self.page.url or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _url_indicates_email_verify(url: str) -> bool:
+        normalized = (url or "").lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "#/challenge/email-verification",
+                "/challenge/email-verification",
+                "email-verification/code",
+            )
+        )
+
+    @staticmethod
+    def _url_indicates_signup_profile(url: str) -> bool:
+        normalized = (url or "").lower()
+        if "email-verification" in normalized or "#/challenge" in normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "#/create-account/profile",
+                "#/signup/profile",
+                "signup/profile",
+            )
+        )
+
     def _is_signup_profile_step(self) -> bool:
+        if self._url_indicates_signup_profile(self._current_browser_location()):
+            return True
         return bool(self._find_visible_input(['#Signup-FirstNameField', 'input[name="firstName"]'], timeout=0.5))
 
     def _click_step1_continue(self, timeout: int = 12) -> bool:
@@ -352,18 +393,25 @@ class AdobeBrowserRegister:
 
     def _is_email_verify_page(self) -> bool:
         """检测是否已经进入 Adobe 邮箱验证码页面。"""
-        verify_texts = ['验证您的电子邮件', '验证码', 'Verify your email', 'verification', 'Enter the code']
-        for txt in verify_texts:
+        if self._url_indicates_email_verify(self._current_browser_location()):
+            return True
+
+        verify_texts = ['验证您的电子邮件', '验证码', 'Verify your email', 'email verification', 'Enter the code']
+        for _, context in self._candidate_otp_contexts():
+            for txt in verify_texts:
+                try:
+                    ele = context.ele(f'text:{txt}', timeout=0.5)
+                    if ele and ele.states.is_displayed:
+                        return True
+                except Exception:
+                    continue
             try:
-                ele = self.page.ele(f'text:{txt}', timeout=0.5)
-                if ele and ele.states.is_displayed:
+                code_inputs = context.eles('input[maxlength="1"]', timeout=0.5)
+                if code_inputs and len(code_inputs) >= 6:
                     return True
             except Exception:
                 continue
-        try:
-            return bool(self.page.eles('input[maxlength="1"]', timeout=0.5))
-        except Exception:
-            return False
+        return False
 
     def _wait_after_submit_for_verification(self, url_before: str, timeout: int = 300) -> str:
         """提交注册后等待 Arkose 通过、邮箱验证码页或成功跳转。"""
@@ -371,7 +419,7 @@ class AdobeBrowserRegister:
         saw_arkose = False
         last_log = 0.0
         while time.time() - start < timeout:
-            cur_url = self.page.url or ""
+            cur_url = self._current_browser_location()
             if cur_url.startswith("https://firefly.adobe.com"):
                 self.log("[Adobe] ✅ 已跳转到 Firefly，跳过邮箱验证码等待")
                 return "success"
@@ -399,7 +447,7 @@ class AdobeBrowserRegister:
 
             time.sleep(2)
 
-        self.log(f"⚠️ 提交注册后 {timeout}s 内未检测到 Arkose 通过后的邮箱验证码页，当前 URL: {self.page.url}")
+        self.log(f"⚠️ 提交注册后 {timeout}s 内未检测到 Arkose 通过后的邮箱验证码页，当前 URL: {self._current_browser_location()}")
         return "timeout"
 
     def init_browser(self):

@@ -104,6 +104,110 @@ class TestAdobeBrowserRegisterArkoseWait:
 
         assert worker._is_email_verify_page() is True
 
+    def test_detects_email_verify_from_url_hash_without_dom(self):
+        class FakePage:
+            url = "https://auth.services.adobe.com/zh_HANS/deeplink.html#/challenge/email-verification/code"
+
+            def run_js(self, script):
+                if "window.location" in script:
+                    return "https://auth.services.adobe.com/zh_HANS/deeplink.html#/challenge/email-verification/code"
+                return None
+
+            def ele(self, selector, timeout=0.5):
+                return None
+
+            def eles(self, selector, timeout=0.5):
+                return []
+
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker.page = FakePage()
+
+        assert worker._is_email_verify_page() is True
+
+    def test_detects_email_verify_inputs_inside_trusted_iframe(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeIframeElement:
+            def attr(self, name):
+                if name == "src":
+                    return "https://auth.services.adobe.com/challenge/email-verification"
+                if name == "title":
+                    return "Adobe verification"
+                return ""
+
+        class FakeInput:
+            states = FakeStates()
+
+        class FakeFrame:
+            def ele(self, selector, timeout=0.5):
+                return None
+
+            def eles(self, selector, timeout=0.5):
+                if selector == 'input[maxlength="1"]':
+                    return [FakeInput() for _ in range(6)]
+                return []
+
+        class FakePage:
+            url = "https://auth.services.adobe.com/signup"
+
+            def run_js(self, script):
+                if "window.location" in script:
+                    return self.url
+                return None
+
+            def ele(self, selector, timeout=0.5):
+                return None
+
+            def eles(self, selector, timeout=0.5):
+                if selector == "iframe":
+                    return [FakeIframeElement()]
+                return []
+
+            def get_frame(self, iframe):
+                return FakeFrame()
+
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker.page = FakePage()
+
+        assert worker._is_email_verify_page() is True
+
+    def test_signup_profile_url_detection_rejects_challenge_routes(self):
+        assert AdobeBrowserRegister._url_indicates_signup_profile(
+            "https://auth.services.adobe.com/zh_HANS/deeplink.html#/challenge/email-verification/code"
+        ) is False
+        assert AdobeBrowserRegister._url_indicates_signup_profile(
+            "https://auth.services.adobe.com/zh_HANS/deeplink.html#/challenge/arkose"
+        ) is False
+
+    def test_email_verify_text_detection_rejects_generic_verification_text(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeElement:
+            states = FakeStates()
+
+        class FakePage:
+            url = "https://auth.services.adobe.com/signup"
+
+            def run_js(self, script):
+                if "window.location" in script:
+                    return self.url
+                return None
+
+            def ele(self, selector, timeout=0.5):
+                if selector == "text:verification":
+                    return FakeElement()
+                return None
+
+            def eles(self, selector, timeout=0.5):
+                return []
+
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker.page = FakePage()
+
+        assert worker._is_email_verify_page() is False
+
     def test_wait_after_submit_returns_email_verify_after_arkose_clears(self):
         class FakePage:
             url = "https://auth.services.adobe.com/signup"
