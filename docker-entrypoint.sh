@@ -5,7 +5,7 @@ set -e
 rm -rf /tmp/.X*-lock /tmp/.X11-unix /tmp/.DrissionPage* /tmp/chrome* /tmp/chromium* 2>/dev/null || true
 
 # 启动虚拟显示
-Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+Xvfb :99 -screen 0 1280x720x24 -nolisten tcp &
 export DISPLAY=:99
 
 # 等待 Xvfb 就绪
