@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from urllib.parse import urlparse
 from platforms.adobe.browser_register import AdobeBrowserRegister
 from platforms.adobe.browser_subscribe import SubscribeResult
 
@@ -9,6 +10,19 @@ FIREFLY_PRO_CHECKOUT_URL = (
     "?osi=msg4m1782IVpeTz8mHd_P_0GG3OSG7XS932oW-7EGuM"
     "&type=checkoutUrl&text=buy-now&workflowStep=commitment"
 )
+
+CHECKOUT_ALLOWED_HOST_SUFFIXES = (
+    ".adobe.com",
+    ".adobe.io",
+    ".adobelogin.com",
+    ".demdex.net",
+)
+CHECKOUT_ALLOWED_HOSTS = {
+    "adobe.com",
+    "adobe.io",
+    "adobelogin.com",
+    "demdex.net",
+}
 
 
 class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
@@ -92,8 +106,26 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             return False
         if self._has_auth_cookie():
             return True
-        sign_in = self._visible_element('text:Sign in', timeout=0.3) or self._visible_element('text:登录', timeout=0.3)
-        return sign_in is None and "firefly.adobe.com" in current_url
+        return bool(
+            self._visible_element('button[aria-label*="Account"]', timeout=0.3)
+            or self._visible_element('button[aria-label*="Profile"]', timeout=0.3)
+            or self._visible_element('button[aria-label*="账户"]', timeout=0.3)
+            or self._visible_element('button[aria-label*="个人资料"]', timeout=0.3)
+            or self._visible_element('[data-testid*="profile"]', timeout=0.3)
+            or self._visible_element('[data-test-id*="profile"]', timeout=0.3)
+            or self._visible_element('[data-testid*="account"]', timeout=0.3)
+            or self._visible_element('[data-test-id*="account"]', timeout=0.3)
+        )
+
+    def _host_allowed(self, url: str) -> bool:
+        host = (urlparse(url).hostname or "").lower()
+        return host in CHECKOUT_ALLOWED_HOSTS or any(host.endswith(suffix) for suffix in CHECKOUT_ALLOWED_HOST_SUFFIXES)
+
+    def _checkout_origin_result(self) -> SubscribeResult | None:
+        current_url = self.page.url or ""
+        if not self._host_allowed(current_url):
+            return SubscribeResult(False, "checkout", f"结算页来源异常: {current_url}", "unexpected_checkout_origin")
+        return None
 
     def _open_firefly_login_entry(self) -> None:
         """Open Firefly and prefer its real sign-in link over a static auth deeplink."""
@@ -330,40 +362,45 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             return SubscribeResult(False, "fill_card", "iFrame 内找不到卡号输入框", "card_input_not_found")
 
         exp_value = f"{str(card.exp_month).zfill(2)}{str(card.exp_year)[-2:]}"
-        self._fill_frame_input(frame, [
+        if not self._fill_frame_input(frame, [
             'input[autocomplete="cc-exp"]',
             'input[name="cardExpirationDate"]',
             '#cardExpirationDate',
             'input[placeholder*="MM"]',
-        ], exp_value, "有效期")
-        self._fill_frame_input(frame, [
+        ], exp_value, "有效期"):
+            return SubscribeResult(False, "fill_card", "iFrame 内找不到有效期输入框", "card_exp_not_found")
+        if not self._fill_frame_input(frame, [
             'input[autocomplete="cc-csc"]',
             'input[name="securityCode"]',
             '#securityCode',
             'input[placeholder*="CVC"]',
             'input[placeholder*="CVV"]',
-        ], card.cvc, "CVC")
+        ], card.cvc, "CVC"):
+            return SubscribeResult(False, "fill_card", "iFrame 内找不到 CVC 输入框", "card_cvc_not_found")
         return None
 
     def _fill_checkout_address(self) -> SubscribeResult | None:
         from core.virtual_card import generate_random_address
 
         address = generate_random_address()
-        self._fill_page_input([
+        if not self._fill_page_input([
             '#firstName',
             'input[name="firstName"]',
             'input[autocomplete="given-name"]',
-        ], address.first_name, "账单名")
-        self._fill_page_input([
+        ], address.first_name, "账单名"):
+            return SubscribeResult(False, "fill_address", "找不到账单名输入框", "billing_first_name_not_found")
+        if not self._fill_page_input([
             '#lastName',
             'input[name="lastName"]',
             'input[autocomplete="family-name"]',
-        ], address.last_name, "账单姓")
-        self._fill_page_input([
+        ], address.last_name, "账单姓"):
+            return SubscribeResult(False, "fill_address", "找不到账单姓输入框", "billing_last_name_not_found")
+        if not self._fill_page_input([
             '#postalCode',
             'input[name="postalCode"]',
             'input[autocomplete="postal-code"]',
-        ], address.postal_code, "邮编")
+        ], address.postal_code, "邮编"):
+            return SubscribeResult(False, "fill_address", "找不到邮编输入框", "billing_postal_code_not_found")
         return None
 
     def _submit_subscription(self) -> SubscribeResult:
@@ -385,10 +422,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
         for index in range(60):
             page_text = ""
-            url = ""
             try:
                 page_text = (self.page.html or "").lower()
-                url = self.page.url or ""
             except Exception:
                 pass
 
@@ -408,8 +443,6 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             ]:
                 if pattern in page_text:
                     return SubscribeResult(False, "verify", message, pattern)
-            if "firefly.adobe.com" in url and "checkout" not in url:
-                return SubscribeResult(True, "verify", "页面已跳转回 Firefly，订阅完成")
             if index in {8, 16}:
                 self._click_first_visible([
                     'button[data-id="checkout-submit-button"]',
@@ -431,6 +464,10 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
         if "auth.services.adobe.com" in (self.page.url or ""):
             return SubscribeResult(False, "checkout", "结算页仍要求登录", "checkout_requires_login")
+
+        origin_result = self._checkout_origin_result()
+        if origin_result:
+            return origin_result
 
         result = self._fill_checkout_card(card)
         if result:

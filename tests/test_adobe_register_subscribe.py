@@ -146,6 +146,14 @@ class TestAdobeRegisterSubscribeRun:
 
 
 class TestAdobeRegisterSubscribeLogin:
+    def test_firefly_page_without_sign_in_text_is_not_enough_to_mark_logged_in(self):
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/"})()
+        worker._has_auth_cookie = lambda: False
+        worker._visible_element = lambda selector, timeout=0.3: None
+
+        assert worker._looks_logged_in() is False
+
     def test_login_entry_clicks_firefly_sign_in_and_raises_if_not_found(self):
         class FakeStates:
             is_displayed = True
@@ -308,4 +316,88 @@ class TestAdobeRegisterSubscribeLogin:
         worker._ensure_logged_in("user@example.com", "Secret123!")
 
         assert calls == ["otp:True", "otp:False"]
+
+
+class TestAdobeRegisterSubscribeCheckout:
+    def test_checkout_rejects_unexpected_top_level_origin_before_filling_card(self):
+        class Card:
+            card_number = "4111111111111111"
+            exp_month = "01"
+            exp_year = "2030"
+            cvc = "123"
+
+        class FakePage:
+            url = "https://evil.example/checkout"
+
+            def get(self, url):
+                self.url = "https://evil.example/checkout"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._wait_page_ready = lambda timeout=30: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._fill_checkout_card = lambda card: (_ for _ in ()).throw(AssertionError("should not fill card"))
+
+        result = worker._subscribe_firefly_pro(Card())
+
+        assert result.success is False
+        assert result.stage == "checkout"
+        assert result.error == "unexpected_checkout_origin"
+
+    def test_checkout_card_requires_expiration_and_cvc(self):
+        class Card:
+            card_number = "4111111111111111"
+            exp_month = "01"
+            exp_year = "2030"
+            cvc = "123"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker._find_checkout_frame = lambda: object()
+        calls = []
+
+        def fill(frame, selectors, value, label):
+            calls.append(label)
+            return label == "卡号"
+
+        worker._fill_frame_input = fill
+
+        result = worker._fill_checkout_card(Card())
+
+        assert result is not None
+        assert result.success is False
+        assert result.error == "card_exp_not_found"
+        assert calls == ["卡号", "有效期"]
+
+    def test_checkout_address_requires_billing_fields(self):
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        calls = []
+
+        def fill(selectors, value, label):
+            calls.append(label)
+            return label != "账单姓"
+
+        worker._fill_page_input = fill
+
+        result = worker._fill_checkout_address()
+
+        assert result is not None
+        assert result.success is False
+        assert result.error == "billing_last_name_not_found"
+        assert calls == ["账单名", "账单姓"]
+
+    def test_submit_subscription_does_not_treat_plain_firefly_redirect_as_success(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+        class FakePage:
+            url = "https://firefly.adobe.com/"
+            html = "<html><body>Firefly home</body></html>"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._click_first_visible = lambda selectors, label, timeout=20: True
+
+        result = worker._submit_subscription()
+
+        assert result.success is False
+        assert result.error == "result_timeout"
 
