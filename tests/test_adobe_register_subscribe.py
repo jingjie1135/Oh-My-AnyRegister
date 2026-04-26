@@ -196,6 +196,77 @@ class TestAdobeRegisterSubscribeLogin:
         assert worker.page.visited == ["https://firefly.adobe.com/"]
         assert worker.page.url == "https://auth.services.adobe.com/signin/from-firefly"
 
+    def test_login_entry_confirms_modal_and_switches_to_new_login_tab(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeElement:
+            states = FakeStates()
+
+            def __init__(self, action):
+                self.action = action
+
+            class scroll:
+                @staticmethod
+                def to_see():
+                    return None
+
+            def click(self, by_js=False):
+                self.action()
+
+        class FakePage:
+            def __init__(self, browser, url):
+                self.browser = browser
+                self.url = url
+                self.visited = []
+
+            def get(self, url):
+                self.visited.append(url)
+                self.url = url
+
+            def ele(self, selector, timeout=0.5):
+                if selector == 'text:Sign in':
+                    return FakeElement(lambda: setattr(self, "modal_open", True))
+                if getattr(self, "modal_open", False) and selector == 'tag:button@@text():Register':
+                    return FakeElement(self.browser.open_login_tab)
+                return None
+
+        class FakeBrowser:
+            def __init__(self):
+                self.login_tab = None
+                self.tabs = []
+
+            @property
+            def tab_ids(self):
+                return [id(tab) for tab in self.tabs]
+
+            def get_tab(self, tab_id=None):
+                if tab_id is None:
+                    return self.tabs[-1]
+                for tab in self.tabs:
+                    if id(tab) == tab_id:
+                        return tab
+                return None
+
+            def open_login_tab(self):
+                self.login_tab = FakePage(self, "https://auth.services.adobe.com/signin/new-window")
+                self.tabs.append(self.login_tab)
+
+        browser = FakeBrowser()
+        main_page = FakePage(browser, "")
+        browser.tabs.append(main_page)
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = main_page
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._looks_logged_in = lambda: False
+
+        worker._open_firefly_login_entry()
+
+        assert worker.page is browser.login_tab
+        assert worker.page.url == "https://auth.services.adobe.com/signin/new-window"
+
     def test_login_entry_raises_if_not_found(self):
         class FakePage:
             def __init__(self):

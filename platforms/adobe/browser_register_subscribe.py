@@ -127,6 +127,86 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             return SubscribeResult(False, "checkout", f"结算页来源异常: {current_url}", "unexpected_checkout_origin")
         return None
 
+    def _tab_controller(self):
+        if hasattr(self.page, "get_tab") or hasattr(self.page, "tab_ids"):
+            return self.page
+        try:
+            return getattr(self.page, "browser", None) or self.page
+        except Exception:
+            return self.page
+
+    def _current_tab_ids(self) -> list:
+        controller = self._tab_controller()
+        try:
+            tab_ids = controller.tab_ids
+        except Exception as exc:
+            self._debug(f"读取标签页列表失败: {exc}")
+            return []
+        return list(tab_ids or [])
+
+    def _switch_to_tab(self, tab_id=None) -> bool:
+        controller = self._tab_controller()
+        try:
+            if tab_id is not None:
+                new_page = controller.get_tab(tab_id)
+            else:
+                latest_tab = getattr(controller, "latest_tab", None)
+                if latest_tab and not isinstance(latest_tab, str):
+                    new_page = latest_tab
+                elif latest_tab:
+                    new_page = controller.get_tab(latest_tab)
+                else:
+                    new_page = controller.get_tab()
+        except Exception as exc:
+            self._debug(f"切换新登录窗口失败: {exc}")
+            return False
+        if not new_page:
+            return False
+        self.page = new_page
+        try:
+            self.page.set.activate()
+        except Exception:
+            pass
+        self._wait_page_ready(20)
+        self._delay(1, 2)
+        self.log(f"✅ 已切换到新登录窗口: {self.page.url}")
+        return True
+
+    def _switch_to_new_tab_after_click(self, before_tab_ids: set, timeout: float = 10) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            current_ids = self._current_tab_ids()
+            for tab_id in current_ids:
+                if tab_id not in before_tab_ids:
+                    return self._switch_to_tab(tab_id)
+            try:
+                new_tab_id = self._tab_controller().wait.new_tab(timeout=1)
+                if new_tab_id:
+                    return self._switch_to_tab(new_tab_id)
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def _confirm_firefly_login_modal(self, before_tab_ids: set) -> bool:
+        clicked = self._click_first_visible([
+            'button[data-testid*="register"]',
+            'button[data-test-id*="register"]',
+            'button[aria-label*="Register"]',
+            'button[aria-label*="注册"]',
+            'tag:button@@text():Register',
+            'tag:button@@text():注册',
+            'tag:button@@text():Create account',
+            'tag:button@@text():创建账户',
+            'tag:button@@text():Sign in',
+            'tag:button@@text():登录',
+            'tag:button@@text():Continue',
+            'tag:button@@text():继续',
+        ], "Firefly 登录弹窗确认", timeout=8)
+        if not clicked:
+            return False
+        return self._switch_to_new_tab_after_click(before_tab_ids, timeout=12)
+
     def _open_firefly_login_entry(self) -> None:
         """Open Firefly and prefer its real sign-in link over a static auth deeplink."""
         self.page.get("https://firefly.adobe.com/")
@@ -135,6 +215,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         if self._looks_logged_in():
             return
 
+        before_tab_ids = set(self._current_tab_ids())
         clicked = self._click_first_visible([
             'button.profile-comp.secondary-button',
             '.profile-comp.secondary-button',
@@ -157,6 +238,9 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         if clicked:
             self._wait_page_ready(20)
             self._delay(2, 3)
+            if self._switch_to_new_tab_after_click(before_tab_ids, timeout=2):
+                return
+            self._confirm_firefly_login_modal(before_tab_ids)
             return
 
         self.log("⚠️ 未在 Firefly 首页找到真实登录入口，放弃自动登录")
