@@ -28,7 +28,10 @@ class TestAdobeRegisterSubscribeRun:
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
         calls = []
         worker.init_browser = lambda: calls.append("init")
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: calls.append("entry")
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: False
         worker._register_account = lambda email, password: calls.append("register")
         worker._ensure_logged_in = lambda email, password: calls.append("login")
         worker._subscribe_firefly_pro = lambda card: calls.append("subscribe") or SubscribeResult(True, "verify", "ok")
@@ -36,7 +39,7 @@ class TestAdobeRegisterSubscribeRun:
 
         result = worker.run("user@example.com", "Secret123!")
 
-        assert calls == ["init", "register", "login", "subscribe", "cookies"]
+        assert calls == ["init", "entry", "register", "login", "subscribe", "cookies"]
         assert result["token"] == "sid=1"
         assert result["extra"]["subscription"]["success"] is True
         assert result["extra"]["subscription"]["plan"] == "firefly_pro"
@@ -50,7 +53,10 @@ class TestAdobeRegisterSubscribeRun:
 
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
         worker.init_browser = lambda: None
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: None
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: False
         worker._register_account = lambda email, password: None
         worker._ensure_logged_in = lambda email, password: None
         worker._subscribe_firefly_pro = lambda card: SubscribeResult(False, "submit", "no button", "submit_btn_not_found")
@@ -73,7 +79,10 @@ class TestAdobeRegisterSubscribeRun:
 
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
         worker.init_browser = lambda: None
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: None
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: False
         worker._register_account = lambda email, password: None
         worker._ensure_logged_in = lambda email, password: (_ for _ in ()).throw(RuntimeError("login failed"))
         worker._subscribe_firefly_pro = lambda card: (_ for _ in ()).throw(AssertionError("should not subscribe"))
@@ -95,7 +104,10 @@ class TestAdobeRegisterSubscribeRun:
 
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
         worker.init_browser = lambda: None
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: None
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: False
         worker._register_account = lambda email, password: None
         worker._ensure_logged_in = lambda email, password: None
         worker._subscribe_firefly_pro = lambda card: (_ for _ in ()).throw(RuntimeError("subscribe failed"))
@@ -119,7 +131,10 @@ class TestAdobeRegisterSubscribeRun:
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
         calls = []
         worker.init_browser = lambda: calls.append("init")
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: calls.append("entry")
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: calls.append("auto-login") or False
         worker._register_account = lambda email, password: calls.append("register")
         worker._wait_registration_closure = lambda: calls.append("closure")
         worker._ensure_logged_in = lambda email, password: calls.append("login")
@@ -128,12 +143,38 @@ class TestAdobeRegisterSubscribeRun:
 
         worker.run("user@example.com", "Secret123!")
 
-        assert calls == ["init", "register", "closure", "login", "subscribe", "cookies"]
+        assert calls == ["init", "entry", "register", "closure", "auto-login", "login", "subscribe", "cookies"]
+
+    def test_run_skips_explicit_login_when_signup_already_establishes_firefly_session(self):
+        class Card:
+            card_number = "4111111111111111"
+            exp_month = "01"
+            exp_year = "2030"
+            cvc = "123"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, card=Card())
+        calls = []
+        worker.init_browser = lambda: calls.append("init")
+        worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: calls.append("entry")
+        worker._register_account = lambda email, password: calls.append("register")
+        worker._wait_registration_closure = lambda: calls.append("closure")
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: calls.append("auto-login") or True
+        worker._ensure_logged_in = lambda email, password: calls.append("login")
+        worker._subscribe_firefly_pro = lambda card: calls.append("subscribe") or SubscribeResult(True, "verify", "ok")
+        worker._extract_and_push_cookies = lambda email: calls.append("cookies") or "sid=1"
+
+        worker.run("user@example.com", "Secret123!")
+
+        assert calls == ["init", "entry", "register", "closure", "auto-login", "subscribe", "cookies"]
 
     def test_run_with_missing_card_records_subscription_failure(self):
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
         worker.init_browser = lambda: None
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/", "get": lambda self, url: None, "quit": lambda self: None})()
         worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._open_firefly_create_account_entry = lambda: None
+        worker._wait_firefly_logged_in_after_signup = lambda timeout=60: False
         worker._register_account = lambda email, password: None
         worker._wait_registration_closure = lambda: None
         worker._ensure_logged_in = lambda email, password: None
@@ -197,6 +238,22 @@ class TestAdobeRegisterSubscribeLogin:
         assert worker.page.url == "https://auth.services.adobe.com/signin/from-firefly"
 
     def test_login_entry_confirms_modal_and_switches_to_new_login_tab(self):
+        class FakeIframe:
+            def attr(self, name):
+                if name == "src":
+                    return "https://auth-light.identity.adobe.com/?client_id=clio-playground-web#large-buttons"
+                return ""
+
+        class FakeFrame:
+            def __init__(self, browser):
+                self.browser = browser
+
+            def run_js(self, script):
+                if "large-buttons" in script and "sp-link#sign-in" in script:
+                    self.browser.open_login_tab()
+                    return {"ok": True, "target": "auth-light-sign-in"}
+                return {"ok": False, "reason": "wrong selector"}
+
         class FakeStates:
             is_displayed = True
 
@@ -219,6 +276,7 @@ class TestAdobeRegisterSubscribeLogin:
                 self.browser = browser
                 self.url = url
                 self.visited = []
+                self.frame = FakeFrame(browser)
 
             def get(self, url):
                 self.visited.append(url)
@@ -227,9 +285,15 @@ class TestAdobeRegisterSubscribeLogin:
             def ele(self, selector, timeout=0.5):
                 if selector == 'text:Sign in':
                     return FakeElement(lambda: setattr(self, "modal_open", True))
-                if getattr(self, "modal_open", False) and selector == 'tag:button@@text():Register':
-                    return FakeElement(self.browser.open_login_tab)
                 return None
+
+            def eles(self, selector, timeout=1):
+                if selector == "iframe" and getattr(self, "modal_open", False):
+                    return [FakeIframe()]
+                return []
+
+            def get_frame(self, iframe):
+                return self.frame
 
         class FakeBrowser:
             def __init__(self):
@@ -266,6 +330,178 @@ class TestAdobeRegisterSubscribeLogin:
 
         assert worker.page is browser.login_tab
         assert worker.page.url == "https://auth.services.adobe.com/signin/new-window"
+
+    def test_login_modal_clicks_auth_light_iframe_sign_in_link(self):
+        class FakeIframe:
+            def attr(self, name):
+                if name == "src":
+                    return "https://auth-light.identity.adobe.com/?client_id=clio-playground-web#large-buttons"
+                return ""
+
+        class FakeFrame:
+            def __init__(self, browser):
+                self.browser = browser
+                self.clicked_js = ""
+
+            def run_js(self, script):
+                self.clicked_js = script
+                if "large-buttons" in script and "sp-link#sign-in" in script:
+                    self.browser.open_login_tab()
+                    return {"ok": True, "target": "auth-light-sign-in"}
+                return {"ok": False, "reason": "wrong selector"}
+
+        class FakePage:
+            def __init__(self, browser, url):
+                self.browser = browser
+                self.url = url
+                self.frame = FakeFrame(browser)
+
+            def eles(self, selector, timeout=1):
+                return [FakeIframe()] if selector == "iframe" else []
+
+            def get_frame(self, iframe):
+                return self.frame
+
+        class FakeBrowser:
+            def __init__(self):
+                self.login_tab = None
+                self.tabs = []
+
+            @property
+            def tab_ids(self):
+                return [id(tab) for tab in self.tabs]
+
+            def get_tab(self, tab_id=None):
+                if tab_id is None:
+                    return self.tabs[-1]
+                for tab in self.tabs:
+                    if id(tab) == tab_id:
+                        return tab
+                return None
+
+            def open_login_tab(self):
+                self.login_tab = FakePage(self, "https://auth.services.adobe.com/signin/new-window")
+                self.tabs.append(self.login_tab)
+
+        browser = FakeBrowser()
+        main_page = FakePage(browser, "https://firefly.adobe.com/")
+        browser.tabs.append(main_page)
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = main_page
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._confirm_firefly_login_modal(set(browser.tab_ids)) is True
+        assert main_page.frame.clicked_js
+        assert worker.page is browser.login_tab
+
+    def test_create_account_entry_clicks_auth_light_iframe_create_account_link(self):
+        class FakeIframe:
+            def attr(self, name):
+                if name == "src":
+                    return "https://auth-light.identity.adobe.com/?client_id=clio-playground-web#large-buttons"
+                return ""
+
+        class FakeFrame:
+            def __init__(self, browser):
+                self.browser = browser
+                self.clicked_js = ""
+
+            def run_js(self, script):
+                self.clicked_js = script
+                if "large-buttons" in script and "sp-link#create-account" in script:
+                    self.browser.open_signup_tab()
+                    return {"ok": True, "target": "auth-light-create-account"}
+                return {"ok": False, "reason": "wrong selector"}
+
+        class FakeStates:
+            is_displayed = True
+
+        class FakeElement:
+            states = FakeStates()
+
+            def __init__(self, action):
+                self.action = action
+
+            class scroll:
+                @staticmethod
+                def to_see():
+                    return None
+
+            def click(self, by_js=False):
+                self.action()
+
+        class FakePage:
+            def __init__(self, browser, url):
+                self.browser = browser
+                self.url = url
+                self.visited = []
+                self.frame = FakeFrame(browser)
+
+            def get(self, url):
+                self.visited.append(url)
+                self.url = url
+
+            def ele(self, selector, timeout=0.5):
+                if selector == 'text:Sign in':
+                    return FakeElement(lambda: setattr(self, "modal_open", True))
+                return None
+
+            def eles(self, selector, timeout=1):
+                if selector == "iframe" and getattr(self, "modal_open", False):
+                    return [FakeIframe()]
+                return []
+
+            def get_frame(self, iframe):
+                return self.frame
+
+        class FakeBrowser:
+            def __init__(self):
+                self.signup_tab = None
+                self.tabs = []
+
+            @property
+            def tab_ids(self):
+                return [id(tab) for tab in self.tabs]
+
+            def get_tab(self, tab_id=None):
+                if tab_id is None:
+                    return self.tabs[-1]
+                for tab in self.tabs:
+                    if id(tab) == tab_id:
+                        return tab
+                return None
+
+            def open_signup_tab(self):
+                self.signup_tab = FakePage(self, "https://auth.services.adobe.com/signup/new-window")
+                self.tabs.append(self.signup_tab)
+
+        browser = FakeBrowser()
+        main_page = FakePage(browser, "")
+        browser.tabs.append(main_page)
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = main_page
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._looks_logged_in = lambda: False
+
+        worker._open_firefly_create_account_entry()
+
+        assert main_page.visited == ["https://firefly.adobe.com/"]
+        assert main_page.frame.clicked_js
+        assert worker.page is browser.signup_tab
+        assert worker.page.url == "https://auth.services.adobe.com/signup/new-window"
+
+    def test_wait_firefly_logged_in_after_signup_accepts_cookie_back_on_firefly(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/"})()
+        worker._looks_logged_in = lambda: True
+
+        assert worker._wait_firefly_logged_in_after_signup(timeout=2) is True
 
     def test_login_entry_raises_if_not_found(self):
         class FakePage:
@@ -390,6 +626,28 @@ class TestAdobeRegisterSubscribeLogin:
 
 
 class TestAdobeRegisterSubscribeCheckout:
+    def test_subscribe_flow_uses_upgrade_paywall_path_instead_of_direct_checkout_url(self):
+        class Card:
+            card_number = "4111111111111111"
+            exp_month = "01"
+            exp_year = "2030"
+            cvc = "123"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = type("FakePage", (), {"url": "https://firefly.adobe.com/"})()
+        calls = []
+        worker._open_firefly_upgrade_paywall = lambda: calls.append("upgrade") or True
+        worker._open_firefly_pro_trial_checkout = lambda: calls.append("trial") or True
+        worker._checkout_origin_result = lambda: None
+        worker._fill_checkout_card = lambda card: calls.append("card") or None
+        worker._fill_checkout_address = lambda: calls.append("address") or None
+        worker._submit_subscription = lambda: calls.append("submit") or SubscribeResult(True, "verify", "ok")
+
+        result = worker._subscribe_firefly_pro(Card())
+
+        assert result.success is True
+        assert calls == ["upgrade", "trial", "card", "address", "submit"]
+
     def test_checkout_rejects_unexpected_top_level_origin_before_filling_card(self):
         class Card:
             card_number = "4111111111111111"
@@ -407,6 +665,8 @@ class TestAdobeRegisterSubscribeCheckout:
         worker.page = FakePage()
         worker._wait_page_ready = lambda timeout=30: True
         worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._open_firefly_upgrade_paywall = lambda: True
+        worker._open_firefly_pro_trial_checkout = lambda: True
         worker._fill_checkout_card = lambda card: (_ for _ in ()).throw(AssertionError("should not fill card"))
 
         result = worker._subscribe_firefly_pro(Card())

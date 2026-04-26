@@ -188,21 +188,64 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             time.sleep(0.5)
         return False
 
+    def _click_auth_light_sign_in_link(self, timeout: float = 8) -> bool:
+        click_sign_in_js = """
+        const largeButtons = document.querySelector('large-buttons');
+        const overflow = largeButtons?.shadowRoot?.querySelector('overflow-page');
+        const signIn = overflow?.querySelector('sp-link#sign-in');
+        const anchor = signIn?.shadowRoot?.querySelector('a');
+        if (!anchor) {
+            return { ok: false, reason: 'auth_light_sign_in_not_found' };
+        }
+        anchor.click();
+        return { ok: true, target: 'auth-light-sign-in' };
+        """
+        return self._click_auth_light_link(click_sign_in_js, "auth-light-sign-in", timeout)
+
+    def _click_auth_light_create_account_link(self, timeout: float = 8) -> bool:
+        click_create_account_js = """
+        const largeButtons = document.querySelector('large-buttons');
+        const overflow = largeButtons?.shadowRoot?.querySelector('overflow-page');
+        const createAccount = overflow?.querySelector('sp-link#create-account');
+        const anchor = createAccount?.shadowRoot?.querySelector('a');
+        if (!anchor) {
+            return { ok: false, reason: 'auth_light_create_account_not_found' };
+        }
+        anchor.click();
+        return { ok: true, target: 'auth-light-create-account' };
+        """
+        return self._click_auth_light_link(click_create_account_js, "auth-light-create-account", timeout)
+
+    def _click_auth_light_link(self, script: str, label: str, timeout: float = 8) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                iframes = self.page.eles("iframe", timeout=1)
+            except Exception as exc:
+                self._debug(f"枚举 Firefly 登录 iframe 失败: {exc}")
+                iframes = []
+
+            for index, iframe in enumerate(iframes or []):
+                try:
+                    src = iframe.attr("src") or ""
+                    if "auth-light.identity.adobe.com" not in src:
+                        continue
+                    frame = self.page.get_frame(iframe)
+                    if not frame:
+                        continue
+                    result = frame.run_js(script)
+                    self._debug(f"Firefly auth-light 链接点击结果 iframe[{index}]: {result}")
+                    if isinstance(result, dict) and result.get("ok"):
+                        self.log(f"✅ 点击成功: Firefly auth-light 链接 ({label})")
+                        self._delay(0.5, 1)
+                        return True
+                except Exception as exc:
+                    self._debug(f"Firefly auth-light iframe[{index}] 点击失败: {exc}")
+            time.sleep(0.5)
+        return False
+
     def _confirm_firefly_login_modal(self, before_tab_ids: set) -> bool:
-        clicked = self._click_first_visible([
-            'button[data-testid*="register"]',
-            'button[data-test-id*="register"]',
-            'button[aria-label*="Register"]',
-            'button[aria-label*="注册"]',
-            'tag:button@@text():Register',
-            'tag:button@@text():注册',
-            'tag:button@@text():Create account',
-            'tag:button@@text():创建账户',
-            'tag:button@@text():Sign in',
-            'tag:button@@text():登录',
-            'tag:button@@text():Continue',
-            'tag:button@@text():继续',
-        ], "Firefly 登录弹窗确认", timeout=8)
+        clicked = self._click_auth_light_sign_in_link(timeout=8)
         if not clicked:
             return False
         return self._switch_to_new_tab_after_click(before_tab_ids, timeout=12)
@@ -245,6 +288,94 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
         self.log("⚠️ 未在 Firefly 首页找到真实登录入口，放弃自动登录")
         raise Exception("无法找到 Firefly 登录入口")
+
+    def _open_firefly_create_account_entry(self) -> None:
+        self.page.get("https://firefly.adobe.com/")
+        self._wait_page_ready(20)
+        self._delay(2, 3)
+        before_tab_ids = set(self._current_tab_ids())
+        clicked = self._click_first_visible([
+            'button.profile-comp.secondary-button',
+            '.profile-comp.secondary-button',
+            'button.profile-comp',
+            '.profile-comp',
+            'a[href*="signin"]',
+            'a[href*="deeplink=signin"]',
+            'a[href*="auth.services.adobe.com"]',
+            'button[data-testid*="sign-in"]',
+            'button[data-test-id*="sign-in"]',
+            'button[aria-label*="Sign in"]',
+            'button[aria-label*="登录"]',
+            'tag:a@@text():Sign in',
+            'tag:button@@text():Sign in',
+            'tag:a@@text():登录',
+            'tag:button@@text():登录',
+            'text:Sign in',
+            'text:登录',
+        ], "Firefly 注册入口前置登录按钮", timeout=12)
+        if not clicked:
+            raise Exception("无法找到 Firefly 注册入口")
+        self._wait_page_ready(20)
+        self._delay(2, 3)
+        if not self._click_auth_light_create_account_link(timeout=8):
+            raise Exception("无法在 Firefly auth-light 弹窗中找到创建账户入口")
+        if not self._switch_to_new_tab_after_click(before_tab_ids, timeout=12):
+            raise Exception("点击 Firefly 创建账户后未出现新的注册窗口")
+
+    def _open_firefly_upgrade_paywall(self) -> bool:
+        self.page.get("https://firefly.adobe.com/")
+        self._wait_page_ready(20)
+        self._delay(2, 3)
+        return self._click_first_visible([
+            'button[data-testid="persistent-upgrade"]',
+            '[data-testid="persistent-upgrade"]',
+            'tag:button@@text():升级',
+            'tag:button@@text():Upgrade',
+        ], "Firefly 升级按钮", timeout=12)
+
+    def _find_frame_by_url_part(self, url_part: str, timeout: float = 20):
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                iframes = self.page.eles("iframe", timeout=1)
+            except Exception:
+                iframes = []
+            for iframe in iframes or []:
+                try:
+                    src = iframe.attr("src") or ""
+                    if url_part not in src:
+                        continue
+                    frame = self.page.get_frame(iframe)
+                    if frame:
+                        return frame
+                except Exception:
+                    continue
+            time.sleep(0.5)
+        return None
+
+    def _open_firefly_pro_trial_checkout(self) -> bool:
+        paywall_frame = self._find_frame_by_url_part("commerce.adobe.com/mini-apps/paywall", timeout=20)
+        if not paywall_frame:
+            return False
+        selectors = [
+            'button[aria-label*="Adobe Firefly Pro"]',
+            'button[aria-label*="免費試用, Adobe Firefly Pro"]',
+            'button[aria-label*="免费试用, Adobe Firefly Pro"]',
+        ]
+        start = time.time()
+        while time.time() - start < 20:
+            for selector in selectors:
+                try:
+                    button = paywall_frame.ele(selector, timeout=1)
+                    if button and button.states.is_displayed:
+                        button.click()
+                        self.log("✅ 点击成功: Adobe Firefly Pro 免费试用")
+                        self._delay(1, 2)
+                        return True
+                except Exception as exc:
+                    self._debug(f"Firefly Pro 免费试用按钮点击失败 ({selector}): {exc}")
+            time.sleep(0.5)
+        return False
 
     def _find_visible_password_field(self, timeout: float = 0.5):
         return self._find_first_visible([
@@ -387,6 +518,9 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         raise Exception(f"显式登录超时，当前 URL: {self.page.url}")
 
     def _find_checkout_frame(self):
+        frame = self._find_frame_by_url_part("commerce.adobe.com/store/checkout", timeout=10)
+        if frame:
+            return frame
         selectors = [
             'iframe[data-testid="credit-form-iframe"]',
             'iframe[title*="Card"]',
@@ -448,6 +582,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         exp_value = f"{str(card.exp_month).zfill(2)}{str(card.exp_year)[-2:]}"
         if not self._fill_frame_input(frame, [
             'input[autocomplete="cc-exp"]',
+            '#expiry-date',
             'input[name="cardExpirationDate"]',
             '#cardExpirationDate',
             'input[placeholder*="MM"]',
@@ -486,6 +621,15 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         ], address.postal_code, "邮编"):
             return SubscribeResult(False, "fill_address", "找不到邮编输入框", "billing_postal_code_not_found")
         return None
+
+    def _wait_firefly_logged_in_after_signup(self, timeout: int = 60) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            current_url = self.page.url or ""
+            if current_url.startswith("https://firefly.adobe.com") and self._looks_logged_in():
+                return True
+            time.sleep(1)
+        return False
 
     def _submit_subscription(self) -> SubscribeResult:
         self.log("[Adobe] 10. 提交 Firefly Pro 订阅...")
@@ -541,8 +685,13 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
     def _subscribe_firefly_pro(self, card) -> SubscribeResult:
         if not card:
             return SubscribeResult(False, "checkout", "未提供虚拟卡，跳过订阅", "card_missing")
-        self.log("[Adobe] 8. 跳转 Firefly Pro 结算页...")
-        self.page.get(FIREFLY_PRO_CHECKOUT_URL)
+        self.log("[Adobe] 8. 从 Firefly 升级入口进入 Pro 试用结算页...")
+        if not self._open_firefly_upgrade_paywall():
+            return SubscribeResult(False, "checkout", "找不到 Firefly 升级按钮", "upgrade_btn_not_found")
+        self._wait_page_ready(30)
+        self._delay(4, 6)
+        if not self._open_firefly_pro_trial_checkout():
+            return SubscribeResult(False, "checkout", "找不到 Adobe Firefly Pro 免费试用入口", "pro_trial_btn_not_found")
         self._wait_page_ready(30)
         self._delay(4, 6)
 
@@ -569,6 +718,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         subscription = SubscribeResult(False, "not_started", "订阅未开始", "not_started")
 
         try:
+            self._open_firefly_create_account_entry()
             self._register_account(email, password)
             self._wait_registration_closure()
         except Exception as exc:
@@ -576,7 +726,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             raise
 
         try:
-            self._ensure_logged_in(email, password)
+            if not self._wait_firefly_logged_in_after_signup(timeout=60):
+                self._ensure_logged_in(email, password)
             subscription = self._subscribe_firefly_pro(selected_card)
         except Exception as exc:
             subscription = SubscribeResult(False, "subscribe", f"注册成功后自动订阅异常: {exc}", exc.__class__.__name__)
