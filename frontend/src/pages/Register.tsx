@@ -24,6 +24,7 @@ const DEFAULT_FORM: Record<string, any> = {
   oauth_email_hint: '',
   chrome_user_data_dir: '',
   chrome_cdp_url: '',
+  keep_browser_open: false,
   mail_provider: '',
   sms_provider: '',
 }
@@ -248,6 +249,7 @@ export default function Register() {
       oauth_email_hint: form.oauth_email_hint,
       chrome_user_data_dir: form.chrome_user_data_dir || undefined,
       chrome_cdp_url: form.chrome_cdp_url || undefined,
+      keep_browser_open: form.executor_type === 'headed' ? Boolean(form.keep_browser_open) : false,
     }
     if (form.mail_provider) {
       extra.mail_provider = form.mail_provider
@@ -270,6 +272,7 @@ export default function Register() {
         proxy: form.proxy || null,
         executor_type: form.executor_type,
         captcha_solver: 'auto',
+        keep_browser_open: form.executor_type === 'headed' ? Boolean(form.keep_browser_open) : false,
         extra,
       }),
     })
@@ -320,7 +323,7 @@ export default function Register() {
       <label className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
       <input
         type={type}
-        value={(form as any)[k]}
+        value={form[k]}
         onChange={e => set(k, type === 'number' ? Number(e.target.value) : e.target.value)}
         placeholder={placeholder}
         className="control-surface"
@@ -332,13 +335,29 @@ export default function Register() {
     <div>
       <label className="block text-xs text-[var(--text-muted)] mb-1">{label}</label>
       <select
-        value={(form as any)[k]}
+        value={form[k]}
         onChange={e => set(k, e.target.value)}
         className="control-surface appearance-none"
       >
         {options.map(([v, l]: any) => <option key={v} value={v}>{l}</option>)}
       </select>
     </div>
+  )
+
+  const Toggle = ({ label, description, k, disabled = false }: any) => (
+    <label className={`flex items-center justify-between gap-4 rounded-[22px] border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 ${disabled ? 'opacity-50' : 'cursor-pointer'}`}>
+      <span>
+        <span className="block text-sm font-medium text-[var(--text-primary)]">{label}</span>
+        <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">{description}</span>
+      </span>
+      <input
+        type="checkbox"
+        checked={Boolean(form[k])}
+        disabled={disabled}
+        onChange={e => set(k, e.target.checked)}
+        className="h-5 w-5 accent-[var(--accent)]"
+      />
+    </label>
   )
 
   const renderProviderField = (field: any) => (
@@ -446,6 +465,13 @@ export default function Register() {
                     第三方账号走后台浏览器自动时，建议先配置 Chrome Profile 或 Chrome CDP，以便复用本机已登录的浏览器会话。
                   </p>
                 </>
+              )}
+              {form.executor_type === 'headed' && (
+                <Toggle
+                  label="脚本结束后保留浏览器"
+                  description="适合调试可视化流程。开启后任务结束时不会自动关闭浏览器窗口，需要手动关闭。"
+                  k="keep_browser_open"
+                />
               )}
             </CardContent>
           </Card>

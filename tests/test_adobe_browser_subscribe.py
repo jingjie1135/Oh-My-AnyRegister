@@ -111,3 +111,67 @@ class TestFindVisiblePasswordField:
         worker.page = FakePage()
 
         assert worker._find_visible_password_field() is None
+
+
+class TestAdobeBrowserSubscribeKeepOpen:
+    def test_headed_keep_open_skips_quit(self):
+        class FakePage:
+            def __init__(self):
+                self.quit_called = False
+
+            def quit(self):
+                self.quit_called = True
+
+        page = FakePage()
+        worker = AdobeBrowserSubscribe(headless=False, keep_browser_open=True, log_fn=lambda message: None)
+        worker.page = page
+        worker._init_browser = lambda: None
+
+        def fail_login(email, password):
+            raise RuntimeError("stop")
+
+        worker._do_login = fail_login
+
+        result = worker.run(
+            email="user@example.com",
+            password="Secret123!",
+            card_number="4111111111111111",
+            exp_month="01",
+            exp_year="2030",
+            cvc="123",
+            first_name="A",
+            last_name="B",
+            postal_code="10001",
+        )
+
+        assert result.success is False
+        assert page.quit_called is False
+        assert worker.page is page
+
+    def test_headless_ignores_keep_open_and_quits(self):
+        class FakePage:
+            def __init__(self):
+                self.quit_called = False
+
+            def quit(self):
+                self.quit_called = True
+
+        page = FakePage()
+        worker = AdobeBrowserSubscribe(headless=True, keep_browser_open=True, log_fn=lambda message: None)
+        worker.page = page
+        worker._init_browser = lambda: None
+        worker._do_login = lambda email, password: (_ for _ in ()).throw(RuntimeError("stop"))
+
+        worker.run(
+            email="user@example.com",
+            password="Secret123!",
+            card_number="4111111111111111",
+            exp_month="01",
+            exp_year="2030",
+            cvc="123",
+            first_name="A",
+            last_name="B",
+            postal_code="10001",
+        )
+
+        assert page.quit_called is True

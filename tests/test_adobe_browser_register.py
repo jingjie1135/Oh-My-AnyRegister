@@ -355,3 +355,51 @@ class TestAdobeBrowserRegisterFailureGuards:
         worker._wait_after_submit_for_verification = lambda url_before, timeout=300: "timeout"
 
         assert worker._wait_after_submit_for_verification("https://auth.services.adobe.com/signup") == "timeout"
+
+
+class TestAdobeBrowserRegisterKeepOpen:
+    def test_headed_keep_open_skips_quit_and_profile_cleanup(self):
+        class FakePage:
+            def __init__(self):
+                self.quit_called = False
+
+            def quit(self):
+                self.quit_called = True
+
+        page = FakePage()
+        worker = AdobeBrowserRegister(log_fn=lambda message: None, keep_browser_open=True)
+        worker.page = page
+        worker._user_data_dir = "kept-profile"
+        worker.init_browser = lambda: None
+        worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+
+        try:
+            worker.run("user@example.com", "Secret123!")
+        except Exception:
+            pass
+
+        assert page.quit_called is False
+        assert worker.page is page
+        assert worker._user_data_dir == "kept-profile"
+
+    def test_headless_ignores_keep_open_and_quits(self):
+        class FakePage:
+            def __init__(self):
+                self.quit_called = False
+
+            def quit(self):
+                self.quit_called = True
+
+        page = FakePage()
+        worker = AdobeBrowserRegister(headless=True, log_fn=lambda message: None, keep_browser_open=True)
+        worker.page = page
+        worker.init_browser = lambda: None
+        worker._gen_profile = lambda: {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+
+        try:
+            worker.run("user@example.com", "Secret123!")
+        except Exception:
+            pass
+
+        assert page.quit_called is True
+        assert worker.page is None

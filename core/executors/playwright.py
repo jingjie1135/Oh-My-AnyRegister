@@ -3,9 +3,10 @@ from ..base_executor import BaseExecutor, Response
 
 
 class PlaywrightExecutor(BaseExecutor):
-    def __init__(self, proxy: str = None, headless: bool = True):
+    def __init__(self, proxy: str = None, headless: bool = True, keep_open: bool = False):
         super().__init__(proxy)
         self.headless = headless
+        self.keep_open = bool(keep_open and not headless)
         self._browser = None
         self._context = None
         self._page = None
@@ -49,7 +50,8 @@ class PlaywrightExecutor(BaseExecutor):
         )
 
     def post(self, url, *, headers=None, params=None, data=None, json=None) -> Response:
-        import urllib.parse, json as _json
+        import json as _json
+        import urllib.parse
         if params:
             url = url + "?" + urllib.parse.urlencode(params)
         post_data = None
@@ -127,6 +129,8 @@ class PlaywrightExecutor(BaseExecutor):
         return self._page.press(selector, key, **kwargs)
 
     def close(self) -> None:
+        if self.keep_open:
+            return
         if self._browser:
             self._browser.close()
         if self._pw:

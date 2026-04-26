@@ -82,6 +82,7 @@ class AdobePlatform(BasePlatform):
             browser_worker_builder=lambda ctx, artifacts: __import__("platforms.adobe.browser_register", fromlist=["AdobeBrowserRegister"]).AdobeBrowserRegister(
                 captcha=artifacts.captcha_solver,
                 headless=(ctx.executor_type == "headless"),
+                keep_browser_open=ctx.config.keep_browser_open,
                 proxy=ctx.proxy,
                 otp_callback=artifacts.otp_callback,
                 log_fn=ctx.log,
@@ -105,6 +106,7 @@ class AdobePlatform(BasePlatform):
             {"id": "get_account_state", "label": "查询账号状态", "params": []},
             {"id": "subscribe_pro_plus", "label": "订阅 Pro Plus 试用", "params": [
                 {"key": "card_id", "label": "虚拟卡 ID", "type": "number", "required": True},
+                {"key": "keep_browser_open", "label": "脚本结束后保留可视浏览器", "type": "checkbox", "required": False},
             ]},
         ]
 
@@ -129,6 +131,7 @@ class AdobePlatform(BasePlatform):
             from platforms.adobe.browser_subscribe import AdobeBrowserSubscribe
             worker = AdobeBrowserSubscribe(
                 headless=False,
+                keep_browser_open=bool(params.get("keep_browser_open") or (self.config.extra or {}).get("keep_browser_open")),
                 otp_callback=self._build_subscribe_otp_callback(account),
                 log_fn=self.log,
             )

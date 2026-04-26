@@ -23,6 +23,7 @@ class RegisterTaskRequest(BaseModel):
     proxy: Optional[str] = None
     executor_type: str = "protocol"
     captcha_solver: str = "auto"
+    keep_browser_open: bool = False
     extra: dict = Field(default_factory=dict)
 
 
@@ -32,6 +33,7 @@ class SubscribeTaskRequest(BaseModel):
     account_ids: List[int] = Field(default_factory=list)
     card_id: Optional[int] = None  # 虚拟卡 ID，从数据库获取完整卡信息
     headless: bool = True  # 是否使用 headless 浏览器
+    keep_browser_open: bool = False  # 可视浏览器模式下任务结束后是否保留浏览器
 
 
 @router.post("/register")
@@ -55,6 +57,7 @@ def create_subscribe_task(body: SubscribeTaskRequest):
         "account_ids": body.account_ids,
         "card": card_data,
         "headless": body.headless,
+        "keep_browser_open": body.keep_browser_open,
     }
     task = _create(payload)
 

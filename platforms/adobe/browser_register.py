@@ -2,6 +2,7 @@ import time
 import random
 import re
 import logging
+import os
 import tempfile
 from DrissionPage import ChromiumOptions, ChromiumPage
 from fake_useragent import UserAgent
@@ -13,6 +14,19 @@ from platforms.adobe.browser_subscribe import (
 )
 
 logger = logging.getLogger("adobe_browser")
+
+def _visible_browser_dimension(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    if value < minimum or value > maximum:
+        return default
+    return value
+
+
+VISIBLE_BROWSER_WIDTH = _visible_browser_dimension("VNC_WIDTH", 1280, 640, 3840)
+VISIBLE_BROWSER_HEIGHT = _visible_browser_dimension("VNC_HEIGHT", 720, 480, 2160)
 
 # ====================== Stealth JS 防风控指纹补丁 ======================
 STEALTH_JS = """
@@ -110,9 +124,18 @@ class AdobeBrowserRegister:
         "&scope=AdobeID,firefly_api,openid,pps.read,pps.write,additional_info.projectedProductContext,additional_info.ownerOrg,uds_read,uds_write,ab.manage,read_organizations,additional_info.roles,account_cluster.read,creative_production"
     )
 
-    def __init__(self, captcha=None, headless: bool = False, proxy: str = None, otp_callback=None, log_fn=None):
+    def __init__(
+        self,
+        captcha=None,
+        headless: bool = False,
+        proxy: str = None,
+        otp_callback=None,
+        log_fn=None,
+        keep_browser_open: bool = False,
+    ):
         self.captcha = captcha
         self.headless = headless
+        self.keep_browser_open = bool(keep_browser_open and not headless)
         self.proxy = proxy
         self._otp_callback = otp_callback
         self.log = log_fn or logger.info
@@ -461,6 +484,8 @@ class AdobeBrowserRegister:
             # 适配 DrissionPage v4 新版 API / 原生 Chrome args
             co.set_argument('--headless=new')
             co.set_argument('--disable-gpu')
+        elif self.keep_browser_open:
+            self.log("可视浏览器保持开启：脚本退出时不会自动关闭浏览器")
             
         co.set_argument('--ignore-certificate-errors')
         co.set_argument('--disable-notifications')
@@ -472,6 +497,9 @@ class AdobeBrowserRegister:
         co.set_argument('--disable-infobars')
         co.set_argument('--excludeSwitches=enable-automation')
         co.set_argument('--lang=zh-CN')
+        co.set_argument(f'--window-size={VISIBLE_BROWSER_WIDTH},{VISIBLE_BROWSER_HEIGHT}')
+        co.set_argument('--window-position=0,0')
+        co.set_argument('--force-device-scale-factor=1')
         
         ua = UserAgent(os='windows', browsers=['chrome'])
         co.set_user_agent(ua.random)
@@ -493,7 +521,7 @@ class AdobeBrowserRegister:
         except Exception as e:
             self.log(f"隐身保护注入异常: {e}")
             
-        self.page.set.window.size(random.choice([1920, 1440, 1600]), random.choice([1080, 900]))
+        self.page.set.window.size(VISIBLE_BROWSER_WIDTH, VISIBLE_BROWSER_HEIGHT)
         self.page.set.timeouts(base=10)
 
     def extract_otp_code(self, html: str) -> str:
@@ -827,11 +855,14 @@ class AdobeBrowserRegister:
             raise e
         finally:
             if self.page:
-                try:
-                    self.page.quit()
-                finally:
-                    self.page = None
-            if self._user_data_dir:
+                if self.keep_browser_open:
+                    self.log("可视浏览器已保留，请在检查完成后手动关闭窗口")
+                else:
+                    try:
+                        self.page.quit()
+                    finally:
+                        self.page = None
+            if self._user_data_dir and not self.keep_browser_open:
                 import shutil
                 try:
                     shutil.rmtree(self._user_data_dir, ignore_errors=True)

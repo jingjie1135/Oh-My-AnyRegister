@@ -202,6 +202,7 @@ function RegisterModal({
     oauthProvider: '',
     executorType: '',
   })
+  const [keepBrowserOpen, setKeepBrowserOpen] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -331,6 +332,7 @@ function RegisterModal({
         oauth_email_hint: cfg.oauth_email_hint,
         chrome_user_data_dir: cfg.chrome_user_data_dir,
         chrome_cdp_url: cfg.chrome_cdp_url,
+        keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
       }
       if (autoUploadId) {
         extra.auto_upload_channel_id = autoUploadId
@@ -347,6 +349,7 @@ function RegisterModal({
           platform, count: regCount, concurrency,
           executor_type: selection.executorType,
           captcha_solver: 'auto',
+          keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
           proxy: null,
           extra,
         }),
@@ -438,6 +441,21 @@ function RegisterModal({
                     })}
                   </div>
                 </div>
+
+                {selection.executorType === 'headed' && (
+                  <label className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 cursor-pointer">
+                    <span>
+                      <span className="block text-sm font-medium text-[var(--text-primary)]">脚本结束后保留浏览器</span>
+                      <span className="mt-1 block text-xs text-[var(--text-muted)]">用于调试可视化流程，任务结束后需要手动关闭浏览器窗口。</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={keepBrowserOpen}
+                      onChange={e => setKeepBrowserOpen(e.target.checked)}
+                      className="h-5 w-5 accent-[var(--accent)]"
+                    />
+                  </label>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>

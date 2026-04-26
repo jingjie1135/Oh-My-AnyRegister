@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # 浏览器运行依赖（Chromium）
     chromium chromium-driver \
     # 虚拟显示 + VNC
-    xvfb x11vnc xclip \
+    xvfb x11vnc xclip openbox \
     # noVNC 依赖
     novnc websockify \
     # Chromium/通用系统库
@@ -31,8 +31,13 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 下载 Camoufox 浏览器二进制（Turnstile Solver 依赖）
-RUN python -m camoufox fetch
+# 下载 Camoufox 浏览器二进制（Turnstile Solver 依赖，增加重试以防网络连接断开）
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        python -m camoufox fetch && exit 0; \
+        sleep $((attempt * 15)); \
+    done; \
+    python -m camoufox fetch
 
 # 安装 Patchright 浏览器（Solver 备用引擎）
 RUN patchright install chromium || true

@@ -16,7 +16,7 @@ from core.account_graph import (
     patch_account_graph,
     recover_lifecycle_status_for_valid_account,
 )
-from core.base_platform import AccountStatus, RegisterConfig
+from core.base_platform import RegisterConfig
 from core.datetime_utils import format_local_clock, serialize_datetime
 from core.db import AccountModel, TaskEventModel, TaskLog, TaskModel, engine, save_account
 from core.platform_accounts import build_platform_account
@@ -558,10 +558,13 @@ def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger
     executor_type = str(payload.get("executor_type", "protocol") or "protocol")
     captcha_solver = str(payload.get("captcha_solver", "auto") or "auto")
     extra = dict(payload.get("extra") or {})
+    keep_browser_open_value = extra["keep_browser_open"] if "keep_browser_open" in extra else payload.get("keep_browser_open")
+    keep_browser_open = _bool_config(keep_browser_open_value, False)
     config = RegisterConfig(
         executor_type=executor_type,
         captcha_solver=captcha_solver,
         proxy=resolved_proxy,
+        keep_browser_open=keep_browser_open,
         extra=extra,
     )
     identity_provider = normalize_identity_provider(extra.get("identity_provider", "mailbox"))
@@ -956,6 +959,7 @@ def _execute_subscribe_task(payload: dict[str, Any], logger: TaskLogger) -> None
     account_ids = list(payload.get("account_ids", []))
     card_data = dict(payload.get("card", {}))
     headless = payload.get("headless", True)
+    keep_browser_open = _bool_config(payload.get("keep_browser_open"), False)
     total = len(account_ids)
 
     if not account_ids:
@@ -968,6 +972,8 @@ def _execute_subscribe_task(payload: dict[str, Any], logger: TaskLogger) -> None
     logger.log(f"开始批量订阅，共 {total} 个账号")
     logger.log(f"虚拟卡: ****{str(card_data.get('card_number', ''))[-4:]}")
     logger.log(f"浏览器模式: {'headless' if headless else 'headed (可视化)'}")
+    if not headless and keep_browser_open:
+        logger.log("可视浏览器保持开启：脚本结束后不会自动关闭浏览器")
     logger.set_progress(0, total)
 
     completed = 0
@@ -1057,7 +1063,6 @@ def _execute_subscribe_task(payload: dict[str, Any], logger: TaskLogger) -> None
                     logger.log(f"⚠️ 无法获取验证码: {e}", level="warning")
                 return None
 
-            import time
             from datetime import datetime
             time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
             # 任务名称+时间文件夹，再分不同账号存放
@@ -1071,6 +1076,7 @@ def _execute_subscribe_task(payload: dict[str, Any], logger: TaskLogger) -> None
 
             subscriber = AdobeBrowserSubscribe(
                 headless=headless,
+                keep_browser_open=keep_browser_open,
                 log_fn=logger.log,
                 otp_callback=_otp_callback,
                 screenshot_dir=screenshot_dir,

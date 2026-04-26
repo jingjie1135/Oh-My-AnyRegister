@@ -53,3 +53,13 @@ class TestAdobeSubscribeOtpCallback:
         account = Account(platform="adobe", email="user@example.com", password="Secret123!")
 
         assert platform._build_subscribe_otp_callback(account) is None
+
+    def test_subscribe_action_declares_keep_browser_open_param(self):
+        from platforms.adobe.plugin import AdobePlatform
+
+        platform = AdobePlatform(config=RegisterConfig(executor_type="headed"), mailbox=None)
+
+        actions = platform.get_platform_actions()
+        subscribe_action = next(item for item in actions if item["id"] == "subscribe_pro_plus")
+
+        assert any(param["key"] == "keep_browser_open" and param["type"] == "checkbox" for param in subscribe_action["params"])

@@ -139,7 +139,7 @@ docker compose up -d
 
 访问 `http://localhost:8000`。数据库自动持久化到 `./data/` 目录。
 
-如需使用有头浏览器模式（headed），可通过 noVNC 在浏览器中查看自动化过程：`http://localhost:6080`。
+如需使用有头浏览器模式（headed），可通过 noVNC 在浏览器中查看自动化过程：`http://localhost:6081`。
 
 自定义配置：
 
@@ -149,7 +149,12 @@ services:
   app:
     environment:
       - VNC_PASSWORD=your_password  # 设置 VNC 密码（可选）
+      - VNC_WIDTH=1280              # noVNC/Xvfb/可视浏览器宽度（可选）
+      - VNC_HEIGHT=720              # noVNC/Xvfb/可视浏览器高度（可选）
+      - VNC_DEPTH=24                # Xvfb 色深（可选，支持 8/16/24/32）
 ```
+
+默认可视画布为 `1280x720`。如果调整 `VNC_WIDTH` / `VNC_HEIGHT`，Docker 内的 Xvfb、x11vnc 捕获区域以及 Adobe 可视浏览器窗口会使用同一尺寸，避免 noVNC 只显示左上角或画面被裁切。
 
 重新构建（代码更新后）：
 

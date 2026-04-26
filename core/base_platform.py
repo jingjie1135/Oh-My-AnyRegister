@@ -38,6 +38,7 @@ class RegisterConfig:
     executor_type: str = "protocol"   # protocol | headless | headed
     captcha_solver: str = "auto"  # auto | <provider_key> | manual
     proxy: Optional[str] = None
+    keep_browser_open: bool = False
     extra: dict = field(default_factory=dict)
 
 
@@ -192,10 +193,10 @@ class BasePlatform(ABC):
             return ProtocolExecutor(proxy=self.config.proxy)
         elif t == "headless":
             from .executors.playwright import PlaywrightExecutor
-            return PlaywrightExecutor(proxy=self.config.proxy, headless=True)
+            return PlaywrightExecutor(proxy=self.config.proxy, headless=True, keep_open=False)
         elif t == "headed":
             from .executors.playwright import PlaywrightExecutor
-            return PlaywrightExecutor(proxy=self.config.proxy, headless=False)
+            return PlaywrightExecutor(proxy=self.config.proxy, headless=False, keep_open=self.config.keep_browser_open)
         raise ValueError(f"未知执行器类型: {t}")
 
     def _make_captcha(self, **kwargs):

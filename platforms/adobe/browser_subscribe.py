@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import random
 import re
 import time
@@ -23,6 +24,19 @@ from urllib.parse import urlparse
 from DrissionPage import ChromiumOptions, ChromiumPage
 
 logger = logging.getLogger("adobe_subscribe")
+
+def _visible_browser_dimension(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    if value < minimum or value > maximum:
+        return default
+    return value
+
+
+VISIBLE_BROWSER_WIDTH = _visible_browser_dimension("VNC_WIDTH", 1280, 640, 3840)
+VISIBLE_BROWSER_HEIGHT = _visible_browser_dimension("VNC_HEIGHT", 720, 480, 2160)
 
 
 def _extract_otp_code(result) -> str:
@@ -222,8 +236,10 @@ class AdobeBrowserSubscribe:
         log_fn: Optional[Callable] = None,
         otp_callback: Optional[Callable] = None,
         screenshot_dir: Optional[str] = None,
+        keep_browser_open: bool = False,
     ):
         self.headless = headless
+        self.keep_browser_open = bool(keep_browser_open and not headless)
         self.proxy = proxy
         self.log = log_fn or logger.info
         self.otp_callback = otp_callback
@@ -381,6 +397,8 @@ class AdobeBrowserSubscribe:
             self._debug("浏览器模式: headless")
         else:
             self._debug("浏览器模式: headed (可视化)")
+            if self.keep_browser_open:
+                self._debug("可视浏览器保持开启：脚本退出时不会自动关闭浏览器")
 
         co.set_argument('--ignore-certificate-errors')
         co.set_argument('--disable-notifications')
@@ -390,6 +408,9 @@ class AdobeBrowserSubscribe:
         co.set_argument('--disable-dev-shm-usage')
         co.set_argument('--excludeSwitches=enable-automation')
         co.set_argument('--lang=en-US')
+        co.set_argument(f'--window-size={VISIBLE_BROWSER_WIDTH},{VISIBLE_BROWSER_HEIGHT}')
+        co.set_argument('--window-position=0,0')
+        co.set_argument('--force-device-scale-factor=1')
         if self.proxy:
             co.set_proxy(self.proxy)
             self._debug(f"代理: {self.proxy}")
@@ -418,7 +439,7 @@ class AdobeBrowserSubscribe:
         except Exception as e:
             self._debug(f"Stealth 注入异常: {e}")
 
-        self.page.set.window.size(1920, 1080)
+        self.page.set.window.size(VISIBLE_BROWSER_WIDTH, VISIBLE_BROWSER_HEIGHT)
         self.page.set.timeouts(base=15)
         self.log("✅ 浏览器初始化完成")
 
@@ -1015,8 +1036,11 @@ class AdobeBrowserSubscribe:
         finally:
             self._take_screenshot(f"final_{self._current_step}")
             if self.page:
-                try:
-                    self.page.quit()
-                    self._debug("浏览器已关闭")
-                except Exception:
-                    pass
+                if self.keep_browser_open:
+                    self._debug("可视浏览器已保留，请在检查完成后手动关闭窗口")
+                else:
+                    try:
+                        self.page.quit()
+                        self._debug("浏览器已关闭")
+                    except Exception:
+                        pass
