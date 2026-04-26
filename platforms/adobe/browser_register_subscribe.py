@@ -212,6 +212,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
     def _click_auth_light_link(self, script: str, label: str, timeout: float = 8) -> bool:
         start = time.time()
+        seen_auth_light = False
         while time.time() - start < timeout:
             try:
                 iframes = self.page.eles("iframe", timeout=1)
@@ -224,6 +225,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                     src = iframe.attr("src") or ""
                     if "auth-light.identity.adobe.com" not in src:
                         continue
+                    seen_auth_light = True
                     frame = self.page.get_frame(iframe)
                     if not frame:
                         continue
@@ -236,6 +238,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                 except Exception as exc:
                     self._debug(f"Firefly auth-light iframe[{index}] 点击失败: {exc}")
             time.sleep(0.5)
+        if not seen_auth_light:
+            self.log(f"⚠️ 未检测到 Firefly auth-light iframe，无法点击 {label}")
         return False
 
     def _confirm_firefly_login_modal(self, before_tab_ids: set) -> bool:
@@ -289,6 +293,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         self._delay(2, 3)
         before_tab_ids = set(self._current_tab_ids())
         clicked = self._click_first_visible([
+            '[data-test-id="unav-profile--sign-in"]',
+            '[data-testid="unav-profile--sign-in"]',
             'button.profile-comp.secondary-button',
             '.profile-comp.secondary-button',
             'button.profile-comp',
@@ -309,9 +315,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         ], "Firefly 注册入口前置登录按钮", timeout=12)
         if not clicked:
             raise Exception("无法找到 Firefly 注册入口")
-        self._wait_page_ready(20)
-        self._delay(2, 3)
-        if not self._click_auth_light_create_account_link(timeout=8):
+        self._delay(1, 2)
+        if not self._click_auth_light_create_account_link(timeout=30):
             raise Exception("无法在 Firefly auth-light 弹窗中找到创建账户入口")
         if not self._switch_to_new_tab_after_click(before_tab_ids, timeout=12):
             raise Exception("点击 Firefly 创建账户后未出现新的注册窗口")

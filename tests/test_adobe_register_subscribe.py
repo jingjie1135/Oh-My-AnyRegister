@@ -497,6 +497,28 @@ class TestAdobeRegisterSubscribeLogin:
         assert worker.page is browser.signup_tab
         assert worker.page.url == "https://auth.services.adobe.com/signup/new-window"
 
+    def test_create_account_entry_prefers_verified_firefly_header_sign_in_selector(self):
+        clicked_selectors = []
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = type("FakePage", (), {"get": lambda self, url: None})()
+        worker._wait_page_ready = lambda timeout=20: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._current_tab_ids = lambda: []
+        worker._click_auth_light_create_account_link = lambda timeout=30: True
+        worker._switch_to_new_tab_after_click = lambda before_tab_ids, timeout=12: True
+
+        def click_first_visible(selectors, label, timeout=12):
+            clicked_selectors.extend(selectors)
+            return True
+
+        worker._click_first_visible = click_first_visible
+
+        worker._open_firefly_create_account_entry()
+
+        assert clicked_selectors[0] == '[data-test-id="unav-profile--sign-in"]'
+        assert '[data-testid="unav-profile--sign-in"]' in clicked_selectors
+
     def test_register_account_does_not_navigate_to_static_signup_after_firefly_entry(self):
         class FakePage:
             url = "https://auth.services.adobe.com/...idp_flow_type=create_account#/signup"
