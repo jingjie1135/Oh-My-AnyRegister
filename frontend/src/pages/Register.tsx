@@ -175,10 +175,7 @@ export default function Register() {
     if (!canAutoSubscribe && form.auto_subscribe) {
       setForm(current => ({ ...current, auto_subscribe: false, card_id: '' }))
     }
-    if (form.auto_subscribe && form.keep_browser_open) {
-      set('keep_browser_open', false)
-    }
-  }, [canAutoSubscribe, form.auto_subscribe, form.keep_browser_open])
+  }, [canAutoSubscribe, form.auto_subscribe])
 
   useEffect(() => {
     if (!currentMailboxProvider) return
@@ -491,9 +488,8 @@ export default function Register() {
               {form.executor_type === 'headed' && (
                 <Toggle
                   label="脚本结束后保留浏览器"
-                  description={form.auto_subscribe ? "自动订阅会处理支付信息，开启后将强制关闭浏览器保留。" : "适合调试可视化流程。开启后任务结束时不会自动关闭浏览器窗口，需要手动关闭。"}
+                  description="适合调试可视化流程。开启后任务结束时不会自动关闭浏览器窗口，需要手动关闭。"
                   k="keep_browser_open"
-                  disabled={Boolean(form.auto_subscribe)}
                 />
               )}
             </CardContent>

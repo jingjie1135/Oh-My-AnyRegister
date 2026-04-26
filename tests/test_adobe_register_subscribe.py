@@ -142,7 +142,3 @@ class TestAdobeRegisterSubscribeRun:
         assert result["extra"]["subscription"]["success"] is False
         assert result["extra"]["subscription"]["error"] == "card_missing"
 
-    def test_auto_subscribe_disables_keep_browser_open(self):
-        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None, keep_browser_open=True)
-
-        assert worker.keep_browser_open is False

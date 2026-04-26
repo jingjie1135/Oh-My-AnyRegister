@@ -16,9 +16,6 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
     def __init__(self, *args, card=None, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.keep_browser_open:
-            self.log("⚠️ 自动订阅会处理支付信息，已强制关闭 keep_browser_open 以避免浏览器 Profile 保留敏感会话")
-            self.keep_browser_open = False
         self.card = card
 
     def _debug(self, message: str):

@@ -334,10 +334,7 @@ function RegisterModal({
       setAutoSubscribe(false)
       setAutoSubscribeCardId('')
     }
-    if (autoSubscribe && keepBrowserOpen) {
-      setKeepBrowserOpen(false)
-    }
-  }, [canAutoSubscribe, autoSubscribe, keepBrowserOpen])
+  }, [canAutoSubscribe, autoSubscribe])
 
   const start = async () => {
     setStarting(true)
@@ -349,7 +346,7 @@ function RegisterModal({
         oauth_email_hint: cfg.oauth_email_hint,
         chrome_user_data_dir: cfg.chrome_user_data_dir,
         chrome_cdp_url: cfg.chrome_cdp_url,
-        keep_browser_open: selection.executorType === 'headed' && !autoSubscribe ? keepBrowserOpen : false,
+        keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
       }
       if (autoSubscribe && canAutoSubscribe) {
         extra.auto_subscribe = true
@@ -370,7 +367,7 @@ function RegisterModal({
           platform, count: regCount, concurrency,
           executor_type: selection.executorType,
           captcha_solver: 'auto',
-          keep_browser_open: selection.executorType === 'headed' && !autoSubscribe ? keepBrowserOpen : false,
+          keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
           proxy: null,
           extra,
         }),
@@ -464,15 +461,14 @@ function RegisterModal({
                 </div>
 
                 {selection.executorType === 'headed' && (
-                  <label className={`flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 ${autoSubscribe ? 'opacity-50' : 'cursor-pointer'}`}>
+                  <label className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 cursor-pointer">
                     <span>
                       <span className="block text-sm font-medium text-[var(--text-primary)]">脚本结束后保留浏览器</span>
-                      <span className="mt-1 block text-xs text-[var(--text-muted)]">{autoSubscribe ? '自动订阅会处理支付信息，开启后将强制关闭浏览器保留。' : '用于调试可视化流程，任务结束后需要手动关闭浏览器窗口。'}</span>
+                      <span className="mt-1 block text-xs text-[var(--text-muted)]">用于调试可视化流程，任务结束后需要手动关闭浏览器窗口。</span>
                     </span>
                     <input
                       type="checkbox"
                       checked={keepBrowserOpen}
-                      disabled={autoSubscribe}
                       onChange={e => setKeepBrowserOpen(e.target.checked)}
                       className="h-5 w-5 accent-[var(--accent)]"
                     />
@@ -484,7 +480,7 @@ function RegisterModal({
                     <label className={`flex items-center justify-between gap-4 ${canAutoSubscribe ? 'cursor-pointer' : 'opacity-50'}`}>
                       <span>
                         <span className="block text-sm font-medium text-[var(--text-primary)]">注册后自动订阅 Firefly Pro</span>
-                        <span className="mt-1 block text-xs text-[var(--text-muted)]">使用所选虚拟卡完成 PRO 订阅；开启后不会保留浏览器 Profile。</span>
+                        <span className="mt-1 block text-xs text-[var(--text-muted)]">使用所选虚拟卡完成 PRO 订阅。</span>
                       </span>
                       <input
                         type="checkbox"
