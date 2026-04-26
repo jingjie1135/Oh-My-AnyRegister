@@ -2,8 +2,15 @@ import time
 import random
 import re
 import logging
+import tempfile
 from DrissionPage import ChromiumOptions, ChromiumPage
 from fake_useragent import UserAgent
+
+from platforms.adobe.browser_subscribe import (
+    _build_otp_fill_js,
+    _extract_otp_code,
+    _is_trusted_adobe_auth_frame,
+)
 
 logger = logging.getLogger("adobe_browser")
 
@@ -110,6 +117,7 @@ class AdobeBrowserRegister:
         self._otp_callback = otp_callback
         self.log = log_fn or logger.info
         self.page = None
+        self._user_data_dir = ""
 
     def _delay(self, lo=0.5, hi=1.5):
         time.sleep(random.uniform(lo, hi))
@@ -132,7 +140,7 @@ class AdobeBrowserRegister:
                 if state == "complete":
                     time.sleep(0.5)
                     return True
-            except:
+            except Exception:
                 pass
             time.sleep(0.5)
         return False
@@ -153,9 +161,9 @@ class AdobeBrowserRegister:
                                 ele.click()
                                 self.log(f"✅ 点击成功: '{txt}' <{ele.tag}> {f'({label})' if label else ''}")
                                 return True
-                        except:
+                        except Exception:
                             continue
-                except:
+                except Exception:
                     continue
             self._delay(1, 2)
         return False
@@ -191,9 +199,216 @@ class AdobeBrowserRegister:
             return True
         return False
 
+    def _element_value(self, element) -> str:
+        """读取输入框当前 value，用于确认 React 表单已同步。"""
+        if not element:
+            return ""
+        try:
+            value = element.attr('value')
+            if value:
+                return str(value)
+        except Exception:
+            pass
+        try:
+            return str(element.run_js('return this.value || "";') or "")
+        except Exception:
+            return ""
+
+    def _safe_type_and_confirm(self, element, text: str, label: str, timeout: int = 8) -> bool:
+        """输入文本并等待输入框 value 与目标值一致。"""
+        for attempt in range(2):
+            if not self._safe_type(element, text):
+                continue
+            start = time.time()
+            while time.time() - start < timeout:
+                if self._element_value(element) == text:
+                    return True
+                time.sleep(0.3)
+            self.log(f"  [debug] {label} 输入值未同步，重试 ({attempt + 1}/2)")
+        actual = self._element_value(element)
+        self.log(f"⚠️ {label} 输入未确认，期望长度 {len(text)}，实际值: {actual!r}")
+        return False
+
+    def _find_visible_input(self, selectors, timeout: float = 0.5):
+        for sel in selectors:
+            try:
+                ele = self.page.ele(sel, timeout=timeout)
+                if ele and ele.states.is_displayed:
+                    return ele
+            except Exception:
+                continue
+        return None
+
+    def _is_signup_profile_step(self) -> bool:
+        return bool(self._find_visible_input(['#Signup-FirstNameField', 'input[name="firstName"]'], timeout=0.5))
+
+    def _click_step1_continue(self, timeout: int = 12) -> bool:
+        """点击邮箱/密码页的可用继续按钮，并确认页面进入下一步。"""
+        start = time.time()
+        while time.time() - start < timeout:
+            if self._is_signup_profile_step() or self._is_email_verify_page():
+                return True
+            for sel in [
+                'tag:button@@text():继续',
+                'tag:button@@text():Continue',
+                'button[type="submit"]',
+            ]:
+                try:
+                    btn = self.page.ele(sel, timeout=0.5)
+                    if not btn or not btn.states.is_displayed:
+                        continue
+                    disabled = str(btn.attr('disabled') or btn.attr('aria-disabled') or "").lower()
+                    if disabled in {"true", "disabled"}:
+                        continue
+                    btn.scroll.to_see()
+                    self._delay(0.2, 0.4)
+                    btn.click()
+                    self.log("✅ 点击成功: <button> (Step1 继续)")
+                    return True
+                except Exception as e:
+                    self.log(f"  [debug] Step1 继续按钮点击失败 ({sel}): {e}")
+            self._delay(0.5, 1)
+        return False
+
+    def _candidate_otp_contexts(self):
+        """返回主页面和可能承载 Adobe 身份验证码输入框的可信 iframe。"""
+        contexts = [("主页面", self.page)]
+        try:
+            iframes = self.page.eles('iframe', timeout=1)
+        except Exception as e:
+            self.log(f"  [debug] 枚举 iframe 失败: {e}")
+            return contexts
+
+        for idx, iframe in enumerate(iframes):
+            try:
+                src = iframe.attr('src') or ""
+                title = iframe.attr('title') or ""
+                if not _is_trusted_adobe_auth_frame(src, title):
+                    self.log(f"  [debug] 跳过非 Adobe 身份验证 iframe[{idx}]: title='{title[:30]}' src='{src[:60]}'")
+                    continue
+                iframe_ctx = self.page.get_frame(iframe)
+                if iframe_ctx:
+                    contexts.append((f"iframe[{idx}] title='{title[:30]}' src='{src[:60]}'", iframe_ctx))
+            except Exception as e:
+                self.log(f"  [debug] 跳过不可访问 iframe[{idx}]: {e}")
+        return contexts
+
+    def _fill_otp_code(self, code: str) -> bool:
+        """填写 Adobe 邮箱验证码，兼容单输入框、六宫格和 iframe。"""
+        code = (code or "").strip()[:6]
+        if not re.fullmatch(r"\d{6}", code):
+            self.log(f"  [debug] 忽略非 6 位数字验证码: {code!r}")
+            return False
+
+        fill_js = _build_otp_fill_js(code)
+        for context_label, context in self._candidate_otp_contexts():
+            try:
+                result = context.run_js(fill_js)
+                self.log(f"  [debug] 验证码 JS 填写结果 ({context_label}): {result}")
+                if isinstance(result, dict) and result.get("ok"):
+                    return True
+            except Exception as e:
+                self.log(f"  [debug] 验证码 JS 填写异常 ({context_label}): {e}")
+
+            try:
+                code_inputs = context.eles('input[maxlength="1"]', timeout=1)
+                if code_inputs and len(code_inputs) >= 6:
+                    for i, digit in enumerate(code):
+                        code_inputs[i].click()
+                        self._delay(0.03, 0.08)
+                        code_inputs[i].input(digit)
+                    self.log(f"  [debug] 验证码逐格输入完成 ({context_label})")
+                    return True
+
+                for sel in ['input[autocomplete="one-time-code"]', 'input[name="code"]', 'input[id*="code"]', 'input[type="text"]']:
+                    try:
+                        cf = context.ele(sel, timeout=1)
+                    except Exception as e:
+                        self.log(f"  [debug] 验证码单框选择器不可用 ({context_label}, {sel}): {e}")
+                        continue
+                    if cf and cf.states.is_displayed and self._safe_type(cf, code):
+                        self.log(f"  [debug] 验证码单框输入完成 ({context_label}, {sel})")
+                        return True
+            except Exception as e:
+                self.log(f"  [debug] 验证码兜底输入异常 ({context_label}): {e}")
+
+        return False
+
+    def _is_arkose_visible(self) -> bool:
+        """检测 Arkose Labs 人机验证是否仍在页面上。"""
+        selectors = [
+            'xpath://iframe[contains(@src, "arkoselabs")]',
+            'xpath://iframe[contains(@title, "Arkose")]',
+            'xpath://iframe[contains(@src, "funcaptcha")]',
+        ]
+        for sel in selectors:
+            try:
+                ele = self.page.ele(sel, timeout=0.5)
+                if ele and ele.states.is_displayed:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _is_email_verify_page(self) -> bool:
+        """检测是否已经进入 Adobe 邮箱验证码页面。"""
+        verify_texts = ['验证您的电子邮件', '验证码', 'Verify your email', 'verification', 'Enter the code']
+        for txt in verify_texts:
+            try:
+                ele = self.page.ele(f'text:{txt}', timeout=0.5)
+                if ele and ele.states.is_displayed:
+                    return True
+            except Exception:
+                continue
+        try:
+            return bool(self.page.eles('input[maxlength="1"]', timeout=0.5))
+        except Exception:
+            return False
+
+    def _wait_after_submit_for_verification(self, url_before: str, timeout: int = 300) -> str:
+        """提交注册后等待 Arkose 通过、邮箱验证码页或成功跳转。"""
+        start = time.time()
+        saw_arkose = False
+        last_log = 0.0
+        while time.time() - start < timeout:
+            cur_url = self.page.url or ""
+            if cur_url.startswith("https://firefly.adobe.com"):
+                self.log("[Adobe] ✅ 已跳转到 Firefly，跳过邮箱验证码等待")
+                return "success"
+
+            if self._is_email_verify_page():
+                if saw_arkose:
+                    self.log("[Adobe] Arkose 已通过，检测到邮箱验证码页面")
+                return "email_verify"
+
+            if self._is_arkose_visible():
+                saw_arkose = True
+                now = time.time()
+                if now - last_log > 15:
+                    self.log("🧩 检测到 Arkose Labs 人机验证，请人工完成；脚本将持续等待通过...")
+                    last_log = now
+                time.sleep(2)
+                continue
+
+            if saw_arkose:
+                self.log("[Adobe] Arkose 已消失，继续等待邮箱验证码页面...")
+                saw_arkose = False
+
+            if cur_url != url_before:
+                self._wait_page_ready(5)
+
+            time.sleep(2)
+
+        self.log(f"⚠️ 提交注册后 {timeout}s 内未检测到 Arkose 通过后的邮箱验证码页，当前 URL: {self.page.url}")
+        return "timeout"
+
     def init_browser(self):
         """初始化带有 Stealth 补丁的浏览器"""
         co = ChromiumOptions()
+        self._user_data_dir = tempfile.mkdtemp(prefix="adobe_register_chrome_")
+        co.set_user_data_path(self._user_data_dir)
+        self.log(f"浏览器用户数据目录: {self._user_data_dir}")
+        
         if self.headless:
             # 适配 DrissionPage v4 新版 API / 原生 Chrome args
             co.set_argument('--headless=new')
@@ -213,7 +428,16 @@ class AdobeBrowserRegister:
         ua = UserAgent(os='windows', browsers=['chrome'])
         co.set_user_agent(ua.random)
 
-        self.page = ChromiumPage(co)
+        # 增加重试机制，防止第一次启动报错
+        for attempt in range(3):
+            try:
+                self.page = ChromiumPage(co)
+                break
+            except Exception as e:
+                self.log(f"浏览器启动失败 ({attempt+1}/3): {e}")
+                if attempt == 2:
+                    raise
+                time.sleep(2)
         
         try:
             self.page.run_js(STEALTH_JS)
@@ -256,151 +480,148 @@ class AdobeBrowserRegister:
             email_field = None
             for sel in ['#EmailPage-EmailField', '#Signup-EmailField', 'input[type="email"]']:
                 email_field = self.page.ele(sel, timeout=3)
-                if email_field: break
+                if email_field:
+                    break
 
             if not email_field:
                 self._find_and_click(['使用电子邮件注册', '使用电子邮件继续注册'], timeout=10, label="邮箱入口")
                 self._wait_page_ready()
                 for sel in ['#EmailPage-EmailField', '#Signup-EmailField', 'input[type="email"]']:
                     email_field = self.page.ele(sel, timeout=3)
-                    if email_field: break
+                    if email_field:
+                        break
 
             if not email_field:
                 raise Exception("找不到邮箱输入框！")
 
-            self._safe_type(email_field, email)
-            self._delay(0.3, 0.8)
+            if not self._safe_type_and_confirm(email_field, email, "邮箱"):
+                raise Exception("邮箱输入未完成，停止继续点击")
+            self._delay(0.5, 1.0)
 
             pwd_field = None
             for sel in ['#PasswordPage-PasswordField', '#Signup-PasswordField', 'input[type="password"]']:
                 pwd_field = self.page.ele(sel, timeout=3)
-                if pwd_field: break
+                if pwd_field:
+                    break
                 
             if pwd_field:
-                self._safe_type(pwd_field, password)
+                if not self._safe_type_and_confirm(pwd_field, password, "密码"):
+                    raise Exception("密码输入未完成，停止继续点击")
 
-            if not self._find_and_click(['继续', 'Continue'], timeout=10, label="Step1 继续", tag_filter=['button', 'a', 'span']):
+            if not self._click_step1_continue(timeout=12):
                 self.page.actions.key_down('Enter').key_up('Enter')
+                self._delay(1, 2)
+
+            step_wait_start = time.time()
+            while time.time() - step_wait_start < 15:
+                if self._is_signup_profile_step() or self._is_email_verify_page():
+                    break
+                if self._find_visible_input(['#PasswordPage-PasswordField', '#Signup-PasswordField', 'input[type="password"]'], timeout=0.5):
+                    break
+                time.sleep(1)
+
+            if not self._is_signup_profile_step() and not self._is_email_verify_page():
+                raise Exception(f"Step1 继续后未进入资料页或验证码页，当前 URL: {self.page.url}")
 
             self._delay(3, 5)
             self._wait_page_ready()
 
             # 3. 个人资料填写
             self.log("[Adobe] 3. 填写个人资料信息...")
-            if not pwd_field:
+            if self._is_email_verify_page():
+                self.log("[Adobe] 已直接进入邮箱验证码页，跳过个人资料填写")
+            elif not self._is_signup_profile_step():
+                raise Exception(f"未检测到个人资料页，停止提交注册，当前 URL: {self.page.url}")
+            elif not pwd_field:
                 pwd_field2 = self.page.ele('input[type="password"]', timeout=3)
-                if pwd_field2: self._safe_type(pwd_field2, password)
+                if pwd_field2:
+                    self._safe_type(pwd_field2, password)
 
-            fn_field = self.page.ele('#Signup-FirstNameField', timeout=3) or self.page.ele('input[name="firstName"]', timeout=3)
-            self._safe_type(fn_field, prof["fn"])
-            ln_field = self.page.ele('#Signup-LastNameField', timeout=3) or self.page.ele('input[name="lastName"]', timeout=3)
-            self._safe_type(ln_field, prof["ln"])
+            if self._is_signup_profile_step():
+                fn_field = self.page.ele('#Signup-FirstNameField', timeout=3) or self.page.ele('input[name="firstName"]', timeout=3)
+                if not self._safe_type(fn_field, prof["fn"]):
+                    raise Exception("First name 输入失败")
+                ln_field = self.page.ele('#Signup-LastNameField', timeout=3) or self.page.ele('input[name="lastName"]', timeout=3)
+                if not self._safe_type(ln_field, prof["ln"]):
+                    raise Exception("Last name 输入失败")
 
-            month_field = self.page.ele('#Signup-DateOfBirthChooser-Month', timeout=3) or self.page.ele('select[name="month"]', timeout=3)
-            if month_field:
-                try:
-                    month_field.select.by_value(str(prof["month"]))
-                except:
-                    month_field.click()
-                    self._delay()
-                    month_names = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
-                    self._find_and_click([month_names[prof["month"]]], timeout=5)
-            
-            self._delay(0.5)
-            year_field = self.page.ele('#Signup-DateOfBirthChooser-Year', timeout=3) or self.page.ele('input[name="year"]', timeout=3)
-            self._safe_type(year_field, str(prof["year"]))
-            self._delay(0.5, 1)
+                month_field = self.page.ele('#Signup-DateOfBirthChooser-Month', timeout=3) or self.page.ele('select[name="month"]', timeout=3)
+                if month_field:
+                    try:
+                        month_field.select.by_value(str(prof["month"]))
+                    except Exception:
+                        month_field.click()
+                        self._delay()
+                        month_names = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
+                        self._find_and_click([month_names[prof["month"]]], timeout=5)
+                
+                self._delay(0.5)
+                year_field = self.page.ele('#Signup-DateOfBirthChooser-Year', timeout=3) or self.page.ele('input[name="year"]', timeout=3)
+                if not self._safe_type(year_field, str(prof["year"])):
+                    raise Exception("Year 输入失败")
+                self._delay(0.5, 1)
 
-            # 4. 提交
-            self.log("[Adobe] 4. 提交注册...")
-            url_before = self.page.url
-            
-            # 检测是否有错误提示
-            for err_text in ['不允许使用此电子邮件地址', '不符合我们的要求', 'Please use another email address', 'not permitted']:
-                err_ele = self.page.ele(f'text:{err_text}', timeout=1)
-                if err_ele and err_ele.states.is_displayed:
-                    raise Exception(f"暂不支持该邮箱域名: {err_ele.text}")
-            
-            submit_btn = self.page.ele('tag:button@@text():创建帐户', timeout=2) or self.page.ele('tag:button@@text():Create account', timeout=2)
-            if submit_btn and submit_btn.states.is_displayed:
-                submit_btn.scroll.to_see()
-                self._delay()
-                submit_btn.click()
+            if self._is_email_verify_page():
+                verify_page = True
             else:
-                self._find_and_click(['创建帐户', 'Create account'], timeout=5, tag_filter=['button'])
+                # 4. 提交
+                self.log("[Adobe] 4. 提交注册...")
+                url_before = self.page.url
+                
+                # 检测是否有错误提示
+                for err_text in ['不允许使用此电子邮件地址', '不符合我们的要求', 'Please use another email address', 'not permitted']:
+                    err_ele = self.page.ele(f'text:{err_text}', timeout=1)
+                    if err_ele and err_ele.states.is_displayed:
+                        raise Exception(f"暂不支持该邮箱域名: {err_ele.text}")
+                
+                submit_btn = self.page.ele('tag:button@@text():创建帐户', timeout=2) or self.page.ele('tag:button@@text():Create account', timeout=2)
+                if submit_btn and submit_btn.states.is_displayed:
+                    submit_btn.scroll.to_see()
+                    self._delay()
+                    submit_btn.click()
+                else:
+                    self._find_and_click(['创建帐户', 'Create account'], timeout=5, tag_filter=['button'])
 
-            # 检测跳转
-            max_wait = 20
-            start_w = time.time()
-            page_changed = False
-            while time.time() - start_w < max_wait:
-                if self.page.url != url_before:
-                    page_changed = True
-                    break
-                if self.page.ele('text:验证', timeout=1) or self.page.ele('text:Verify', timeout=1):
-                    page_changed = True
-                    break
-                time.sleep(2)
-
-            self._wait_page_ready()
-            
-            # 检测 Arkose
-            if self.page.ele('xpath://iframe[contains(@src, "arkoselabs")]', timeout=3):
-                raise Exception("Arkose 验证码拦截 (风控等级过高)")
-
-            # 5. 接码
-            self.log("[Adobe] 5. 等待验证码环节...")
-            verify_texts = ['验证您的电子邮件', '验证码', 'Verify your email', 'verification']
-            verify_page = False
-            for step in range(5):
-                for txt in verify_texts:
-                    if self.page.ele(f'text:{txt}', timeout=2):
-                        verify_page = True
-                        break
-                if verify_page: break
-                time.sleep(2)
+                # 检测 Arkose / 邮箱验证码 / 成功跳转。
+                # Arkose 通常需要人工介入，不能把短时间未出现邮箱验证码当作跳过。
+                self._wait_page_ready()
+                self.log("[Adobe] 5. 等待 Arkose / 邮箱验证码环节...")
+                submit_state = self._wait_after_submit_for_verification(url_before, timeout=300)
+                if submit_state == "timeout":
+                    raise Exception("提交注册后等待 Arkose/邮箱验证码/成功跳转超时")
+                verify_page = submit_state == "email_verify"
 
             if verify_page:
                 self.log("📧 检测到验证码页面，呼叫 otp_callback 触发接码...")
                 # 调用项目底层的全局 IMAP 接码机制 (包含轮询及阻塞等待)
-                if self._otp_callback:
-                    code_found = False
-                    start_otp = time.time()
-                    while time.time() - start_otp < 120 and not code_found:
-                        result = self._otp_callback()
-                        if result:
-                            # 兼容两种回调返回值：
-                            # 1. 字符串 → 直接就是验证码 (来自 build_otp_callback / wait_for_code)
-                            # 2. dict → 包含 html_body/body 的原始邮件内容
-                            if isinstance(result, str):
-                                code = result.strip()
-                            elif isinstance(result, dict):
-                                body = result.get('html_body') or result.get('body') or ""
-                                code = self.extract_otp_code(body)
-                            else:
-                                code = ""
-                            
-                            if code:
-                                self.log(f"🔑 拦截到验证码: {code}")
-                                code_inputs = self.page.eles('input[maxlength="1"]', timeout=3)
-                                if code_inputs and len(code_inputs) >= 6:
-                                    for i, digit in enumerate(code[:6]):
-                                        code_inputs[i].click()
-                                        self._delay(0.05, 0.15)
-                                        code_inputs[i].input(digit)
-                                else:
-                                    cf = self.page.ele('input[name="code"]', timeout=3) or self.page.ele('input[type="text"]', timeout=3)
-                                    if cf: self._safe_type(cf, code)
-                                
-                                self._delay(1, 2)
-                                self._find_and_click(['验证', '继续', 'Verify', 'Continue'], timeout=5, label="验证按钮", tag_filter=['button'])
-                                self._delay(3, 5)
-                                code_found = True
-                                break
-                        time.sleep(5)
-                    
-                    if not code_found:
-                        self.log("⚠️ 验证码获取超时。账号可能仍算作创建。")
+                if not self._otp_callback:
+                    raise Exception("邮箱验证码页面需要接码，但未提供 otp_callback")
+                code_found = False
+                start_otp = time.time()
+                while time.time() - start_otp < 120 and not code_found:
+                    result = self._otp_callback()
+                    if result:
+                        # 兼容两种回调返回值：
+                        # 1. 字符串 → 直接就是验证码 (来自 build_otp_callback / wait_for_code)
+                        # 2. dict → 包含 html_body/body 的原始邮件内容
+                        code = _extract_otp_code(result)
+                         
+                        if code:
+                            self.log(f"🔑 拦截到验证码: {code}")
+                            if not self._fill_otp_code(code):
+                                self.log("  [debug] 未能找到或填入验证码输入框，继续等待页面稳定后重试")
+                                time.sleep(5)
+                                continue
+                             
+                            self._delay(1, 2)
+                            self._find_and_click(['验证', '继续', 'Verify', 'Continue'], timeout=5, label="验证按钮", tag_filter=['button'])
+                            self._delay(3, 5)
+                            code_found = True
+                            break
+                    time.sleep(5)
+                
+                if not code_found:
+                    raise Exception("邮箱验证码获取或输入超时")
 
             # ============ 6. Firefly OAuth 授权 + 全域 Cookie 提取 ============
             cookie_str = ""
@@ -445,110 +666,107 @@ class AdobeBrowserRegister:
             except Exception as e:
                 self.log(f"⚠️ 耐心等待重定向环节发生异常: {e}")
 
-                # 6b. 使用 CDP Network.getAllCookies 提取浏览器内全部域名的 Cookie
-                # 关键：page.cookies() 可能不返回 HttpOnly Cookie (如 ims_sid)
-                # 而 CDP Network.getAllCookies 等同于 chrome.cookies.getAll()，能获取全部 Cookie
-                self.log("[Adobe] 6b. 提取全域 Cookie...")
-                all_cookies = []
+            # 6b. 使用 CDP Network.getAllCookies 提取浏览器内全部域名的 Cookie
+            # 关键：page.cookies() 可能不返回 HttpOnly Cookie (如 ims_sid)
+            # 而 CDP Network.getAllCookies 等同于 chrome.cookies.getAll()，能获取全部 Cookie
+            self.log("[Adobe] 6b. 提取全域 Cookie...")
+            all_cookies = []
+            try:
+                # 优先使用 CDP 协议获取完整 Cookie（包含 HttpOnly）
+                cdp_result = self.page.run_cdp('Network.getAllCookies')
+                all_cookies = cdp_result.get('cookies', [])
+                self.log(f"[Adobe] CDP getAllCookies 返回 {len(all_cookies)} 条")
+            except Exception as cdp_err:
+                self.log(f"⚠️ CDP getAllCookies 失败，回退 page.cookies: {cdp_err}")
                 try:
-                    # 优先使用 CDP 协议获取完整 Cookie（包含 HttpOnly）
-                    cdp_result = self.page.run_cdp('Network.getAllCookies')
-                    all_cookies = cdp_result.get('cookies', [])
-                    self.log(f"[Adobe] CDP getAllCookies 返回 {len(all_cookies)} 条")
-                except Exception as cdp_err:
-                    self.log(f"⚠️ CDP getAllCookies 失败，回退 page.cookies: {cdp_err}")
-                    try:
-                        all_cookies = self.page.cookies(all_domains=True)
-                    except TypeError:
-                        all_cookies = self.page.cookies()
-                
-                # 诊断日志: 检查关键 Cookie 是否在原始列表中
-                critical_keys = {'ims_sid', 'aux_sid', 'AWSELB', 'AWSELBCORS'}
-                found_critical = set()
-                for c in all_cookies:
-                    cname = c.get('name', '') if isinstance(c, dict) else getattr(c, 'name', '')
-                    if cname in critical_keys:
-                        cdomain = c.get('domain', '') if isinstance(c, dict) else getattr(c, 'domain', '')
-                        found_critical.add(cname)
-                        self.log(f"  🔑 [关键Cookie] {cname} @ {cdomain}")
-                if not found_critical:
-                    self.log("  ⚠️ 未在浏览器中发现 ims_sid / aux_sid 等关键 Cookie")
+                    all_cookies = self.page.cookies(all_domains=True)
+                except TypeError:
+                    all_cookies = self.page.cookies()
+            
+            # 诊断日志: 检查关键 Cookie 是否在原始列表中
+            critical_keys = {'ims_sid', 'aux_sid', 'AWSELB', 'AWSELBCORS'}
+            found_critical = set()
+            for c in all_cookies:
+                cname = c.get('name', '') if isinstance(c, dict) else getattr(c, 'name', '')
+                if cname in critical_keys:
+                    cdomain = c.get('domain', '') if isinstance(c, dict) else getattr(c, 'domain', '')
+                    found_critical.add(cname)
+                    self.log(f"  🔑 [关键Cookie] {cname} @ {cdomain}")
+            if not found_critical:
+                self.log("  ⚠️ 未在浏览器中发现 ims_sid / aux_sid 等关键 Cookie")
 
-                # 6c. 仅保留 Adobe 相关域名下的 Cookie (与浏览器插件提取范围一致)
-                adobe_domains = ('adobe.com', 'firefly.adobe.com', 'account.adobe.com',
-                                 'auth.services.adobe.com', 'adobelogin.com')
-                filtered = []
-                seen_keys = set()
+            # 6c. 仅保留 Adobe 相关域名下的 Cookie (与浏览器插件提取范围一致)
+            adobe_domains = ('adobe.com', 'firefly.adobe.com', 'account.adobe.com',
+                             'auth.services.adobe.com', 'adobelogin.com')
+            filtered = []
+            seen_keys = set()
 
-                for c in all_cookies:
-                    if isinstance(c, dict):
-                        domain = str(c.get('domain', '')).lower().strip()
-                        name = str(c.get('name', '')).strip()
-                        value = str(c.get('value', '')).strip()
+            for c in all_cookies:
+                if isinstance(c, dict):
+                    domain = str(c.get('domain', '')).lower().strip()
+                    name = str(c.get('name', '')).strip()
+                    value = str(c.get('value', '')).strip()
+                else:
+                    # 兼容某些版本返回 Cookie 对象
+                    domain = str(getattr(c, 'domain', '')).lower().strip()
+                    name = str(getattr(c, 'name', '')).strip()
+                    value = str(getattr(c, 'value', '')).strip()
+
+                if not name:
+                    continue
+
+                # 检查域名是否属于 Adobe 体系 (去除前导点的影响)
+                clean_domain = domain.lstrip('.')
+                is_adobe = any(clean_domain == d or clean_domain.endswith('.' + d) for d in adobe_domains)
+                if not is_adobe:
+                    continue
+
+                # 去重 (与浏览器插件的 seen Set 逻辑一致)
+                dedup_key = f"{domain}|{name}"
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+                filtered.append(f"{name}={value}")
+
+            cookie_str = "; ".join(filtered)
+            self.log(f"🍪 成功提取全域 Cookie (共 {len(filtered)} 条, 长度: {len(cookie_str)})")
+
+            # 6d. 自动推送至 adobe2api (保留原有逻辑)
+            if cookie_str:
+                import requests
+                import os
+                try:
+                    self.log("🚀 正在将新凭证 Cookie 推送至内置 adobe2api (6001)...")
+                    # 支持用户通过环境变量自定义地址，例如在 docker-compose 中配置 ADOBE2API_URL
+                    custom_url = os.environ.get("ADOBE2API_URL")
+                    
+                    if custom_url:
+                        resp = requests.post(
+                            custom_url, 
+                            json={"cookie": cookie_str, "name": email},
+                            timeout=4
+                        )
                     else:
-                        # 兼容某些版本返回 Cookie 对象
-                        domain = str(getattr(c, 'domain', '')).lower().strip()
-                        name = str(getattr(c, 'name', '')).strip()
-                        value = str(getattr(c, 'value', '')).strip()
-
-                    if not name:
-                        continue
-
-                    # 检查域名是否属于 Adobe 体系 (去除前导点的影响)
-                    clean_domain = domain.lstrip('.')
-                    is_adobe = any(clean_domain == d or clean_domain.endswith('.' + d) for d in adobe_domains)
-                    if not is_adobe:
-                        continue
-
-                    # 去重 (与浏览器插件的 seen Set 逻辑一致)
-                    dedup_key = f"{domain}|{name}"
-                    if dedup_key in seen_keys:
-                        continue
-                    seen_keys.add(dedup_key)
-                    filtered.append(f"{name}={value}")
-
-                cookie_str = "; ".join(filtered)
-                self.log(f"🍪 成功提取全域 Cookie (共 {len(filtered)} 条, 长度: {len(cookie_str)})")
-
-                # 6d. 自动推送至 adobe2api (保留原有逻辑)
-                if cookie_str:
-                    import requests
-                    import os
-                    try:
-                        self.log("🚀 正在将新凭证 Cookie 推送至内置 adobe2api (6001)...")
-                        # 支持用户通过环境变量自定义地址，例如在 docker-compose 中配置 ADOBE2API_URL
-                        custom_url = os.environ.get("ADOBE2API_URL")
-                        
-                        if custom_url:
+                        # 兼容 Docker 环境内与 Host 主机间的通讯
+                        try:
                             resp = requests.post(
-                                custom_url, 
+                                "http://adobe2api:6001/api/v1/refresh-profiles/import-cookie", 
                                 json={"cookie": cookie_str, "name": email},
                                 timeout=4
                             )
-                        else:
-                            # 兼容 Docker 环境内与 Host 主机间的通讯
-                            try:
-                                resp = requests.post(
-                                    "http://adobe2api:6001/api/v1/refresh-profiles/import-cookie", 
-                                    json={"cookie": cookie_str, "name": email},
-                                    timeout=4
-                                )
-                            except requests.exceptions.ConnectionError:
-                                resp = requests.post(
-                                    "http://172.17.0.1:6001/api/v1/refresh-profiles/import-cookie", 
-                                    json={"cookie": cookie_str, "name": email},
-                                    timeout=4
-                                )
+                        except requests.exceptions.ConnectionError:
+                            resp = requests.post(
+                                "http://172.17.0.1:6001/api/v1/refresh-profiles/import-cookie", 
+                                json={"cookie": cookie_str, "name": email},
+                                timeout=4
+                            )
 
-                        if resp.status_code == 200:
-                            self.log("✅ 成功对接并导入至 adobe2api!")
-                        else:
-                            self.log(f"⚠️ 导入 adobe2api 返回异常 Http {resp.status_code}")
-                    except Exception as he:
-                        self.log(f"⚠️ 尝试自动推送 adobe2api 失败 (请检查网络层或环境变量配置): {he}")
-            except Exception as e:
-                self.log(f"⚠️ 提取 Cookie 发生异常: {e}")
-
+                    if resp.status_code == 200:
+                        self.log("✅ 成功对接并导入至 adobe2api!")
+                    else:
+                        self.log(f"⚠️ 导入 adobe2api 返回异常 Http {resp.status_code}")
+                except Exception as he:
+                    self.log(f"⚠️ 尝试自动推送 adobe2api 失败 (请检查网络层或环境变量配置): {he}")
             return {
                 "email": email,
                 "password": password,
@@ -561,5 +779,13 @@ class AdobeBrowserRegister:
             raise e
         finally:
             if self.page:
-                self.page.quit()
-
+                try:
+                    self.page.quit()
+                finally:
+                    self.page = None
+            if self._user_data_dir:
+                import shutil
+                try:
+                    shutil.rmtree(self._user_data_dir, ignore_errors=True)
+                except Exception as e:
+                    self.log(f"⚠️ 清理浏览器用户数据目录失败: {e}")
