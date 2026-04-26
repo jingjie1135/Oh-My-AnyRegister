@@ -24,6 +24,20 @@ class TestExtractOtpCode:
     def test_ignores_non_text_result(self):
         assert _extract_otp_code(None) == ""
 
+    def test_extracts_from_traditional_chinese_html_nodes(self):
+        result = {
+            "html_body": "<html><body><p>您的驗證碼：</p><div>083779</div></body></html>"
+        }
+
+        assert _extract_otp_code(result) == "083779"
+
+    def test_extracts_from_private_api_mail_payload_content(self):
+        result = {
+            "content": "<html><body><p>驗證碼</p><p>您的驗證碼：</p><div>083779</div></body></html>"
+        }
+
+        assert _extract_otp_code(result) == "083779"
+
 
 class TestBuildOtpFillJs:
     def test_escapes_code_as_json_literal(self):

@@ -44,7 +44,7 @@ def _extract_otp_code(result) -> str:
     if isinstance(result, str):
         source = result.strip()
     elif isinstance(result, dict):
-        source = result.get('html_body') or result.get('body') or result.get('text') or ""
+        source = result.get('html_body') or result.get('body') or result.get('content') or result.get('text') or ""
     else:
         return ""
 
