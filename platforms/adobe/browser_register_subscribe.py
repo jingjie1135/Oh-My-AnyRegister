@@ -307,12 +307,6 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             'button[data-test-id*="sign-in"]',
             'button[aria-label*="Sign in"]',
             'button[aria-label*="登录"]',
-            'tag:a@@text():Sign in',
-            'tag:button@@text():Sign in',
-            'tag:a@@text():登录',
-            'tag:button@@text():登录',
-            'text:Sign in',
-            'text:登录',
         ], "Firefly 注册入口前置登录按钮", timeout=12)
         if not clicked:
             raise Exception("无法找到 Firefly 注册入口")
