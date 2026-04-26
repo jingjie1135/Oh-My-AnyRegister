@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from platforms.adobe.browser_subscribe import (
     AdobeBrowserSubscribe,
+    _extract_adobe_code_from_mail_text,
     _build_otp_fill_js,
     _extract_otp_code,
     _is_trusted_adobe_auth_frame,
@@ -34,6 +35,19 @@ class TestExtractOtpCode:
     def test_extracts_from_private_api_mail_payload_content(self):
         result = {
             "content": "<html><body><p>驗證碼</p><p>您的驗證碼：</p><div>083779</div></body></html>"
+        }
+
+        assert _extract_otp_code(result) == "083779"
+
+    def test_extracts_adobe_code_near_traditional_label_before_tracking_numbers(self):
+        text = "footer tracking 177010 您的驗證碼：083779 reference 991122"
+
+        assert _extract_adobe_code_from_mail_text(text) == "083779"
+
+    def test_decodes_entities_and_strips_html_before_extracting_adobe_code(self):
+        result = {
+            "subject": "驗證碼",
+            "content": "<table><tr><td>您的驗證碼&nbsp;</td></tr><tr><td>083779</td></tr></table>",
         }
 
         assert _extract_otp_code(result) == "083779"

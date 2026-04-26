@@ -5,6 +5,9 @@ from core.registration import BrowserRegistrationAdapter, OtpSpec, RegistrationC
 from core.registry import register
 import random
 
+ADOBE_OTP_MAIL_KEYWORD = ""
+ADOBE_OTP_CODE_PATTERN = r"(?<!#)(?<!\d)(\d{6})(?!\d)"
+
 def _mask_secret(value: str) -> str:
     if not value:
         return ""
@@ -74,9 +77,9 @@ class AdobePlatform(BasePlatform):
         def _otp_callback() -> str:
             return self.mailbox.wait_for_code(
                 mailbox_account,
-                keyword="Adobe",
+                keyword=ADOBE_OTP_MAIL_KEYWORD,
                 timeout=120,
-                code_pattern=r"(?<!#)(?<!\d)(\d{6})(?!\d)",
+                code_pattern=ADOBE_OTP_CODE_PATTERN,
             )
 
         return _otp_callback

@@ -4,17 +4,20 @@ from __future__ import annotations
 import time
 
 from platforms.adobe.browser_register_subscribe import (
-    FIREFLY_PRO_CHECKOUT_URL,
     AdobeBrowserRegisterSubscribe,
 )
 from platforms.adobe.browser_subscribe import SubscribeResult
+from platforms.adobe.plugin import ADOBE_OTP_MAIL_KEYWORD
 
 
 class TestAdobeRegisterSubscribeConstants:
-    def test_firefly_pro_url_uses_discovered_pro_offer_not_pro_plus(self):
-        assert "msg4m1782IVpeTz8mHd_P_0GG3OSG7XS932oW-7EGuM" in FIREFLY_PRO_CHECKOUT_URL
-        assert "0BF366231CF390A0181EA88C96CCF989" not in FIREFLY_PRO_CHECKOUT_URL
-        assert "FFPLFFPU501YROW" not in FIREFLY_PRO_CHECKOUT_URL
+    def test_register_subscribe_module_no_longer_exports_static_milo_checkout_url(self):
+        import platforms.adobe.browser_register_subscribe as module
+
+        assert not hasattr(module, "FIREFLY_PRO_CHECKOUT_URL")
+
+    def test_adobe_otp_mail_keyword_does_not_require_english_adobe_subject(self):
+        assert ADOBE_OTP_MAIL_KEYWORD == ""
 
 
 class TestAdobeRegisterSubscribeRun:
@@ -494,6 +497,57 @@ class TestAdobeRegisterSubscribeLogin:
         assert worker.page is browser.signup_tab
         assert worker.page.url == "https://auth.services.adobe.com/signup/new-window"
 
+    def test_register_account_does_not_navigate_to_static_signup_after_firefly_entry(self):
+        class FakePage:
+            url = "https://auth.services.adobe.com/...idp_flow_type=create_account#/signup"
+
+            def __init__(self):
+                self.visited = []
+
+            def get(self, url):
+                self.visited.append(url)
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._registration_profile = {"fn": "A", "ln": "B", "month": 1, "year": 1990}
+        worker._wait_page_ready = lambda timeout=20: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+        worker._fill_signup_credentials = lambda email, password: "profile"
+        worker._fill_signup_profile = lambda: None
+        worker._submit_signup_profile = lambda: "success"
+
+        worker._register_account("user@example.com", "Secret123!")
+
+        assert worker.page.visited == []
+
+    def test_detects_real_arkose_iframe_by_arks_client_and_verification_title(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeIframe:
+            states = FakeStates()
+
+            def __init__(self, src, title):
+                self._src = src
+                self._title = title
+
+            def attr(self, name):
+                return {"src": self._src, "title": self._title}.get(name, "")
+
+        class FakePage:
+            def ele(self, selector, timeout=0.5):
+                return None
+
+            def eles(self, selector, timeout=1):
+                if selector == "iframe":
+                    return [FakeIframe("https://arks-client.adobe.com/frame", "Verification challenge")]
+                return []
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+
+        assert worker._is_arkose_visible() is True
+
     def test_wait_firefly_logged_in_after_signup_accepts_cookie_back_on_firefly(self, monkeypatch):
         monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
@@ -626,6 +680,122 @@ class TestAdobeRegisterSubscribeLogin:
 
 
 class TestAdobeRegisterSubscribeCheckout:
+    def test_pro_trial_selector_does_not_match_pro_plus_before_exact_pro_trial(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeButton:
+            states = FakeStates()
+
+            def __init__(self, label, clicks):
+                self.label = label
+                self.clicks = clicks
+
+            def click(self):
+                self.clicks.append(self.label)
+
+        class FakeFrame:
+            def __init__(self):
+                self.clicks = []
+
+            def ele(self, selector, timeout=1):
+                if selector == 'button[aria-label="免費試用, Adobe Firefly Pro"]':
+                    return FakeButton("pro", self.clicks)
+                if selector == 'button[aria-label*="Adobe Firefly Pro"]':
+                    return FakeButton("pro-plus", self.clicks)
+                return None
+
+        frame = FakeFrame()
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker._find_paywall_frame = lambda timeout=20: frame
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._open_firefly_pro_trial_checkout() is True
+        assert frame.clicks == ["pro"]
+
+    def test_checkout_address_uses_checkout_frame_not_top_level_page(self):
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        calls = []
+
+        class FakeFrame:
+            pass
+
+        checkout_frame = FakeFrame()
+        worker._find_checkout_frame = lambda timeout=10: checkout_frame
+
+        def fill(context, selectors, value, label):
+            calls.append((context, label))
+            return True
+
+        worker._fill_context_input = fill
+
+        result = worker._fill_checkout_address()
+
+        assert result is None
+        assert calls
+        assert all(context is checkout_frame for context, label in calls)
+
+    def test_checkout_card_continues_when_cvc_field_is_absent(self):
+        class Card:
+            card_number = "4111111111111111"
+            exp_month = "01"
+            exp_year = "2030"
+            cvc = "123"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker._find_credit_tokenizer_frame = lambda timeout=45: object()
+        calls = []
+
+        def fill(frame, selectors, value, label):
+            calls.append(label)
+            return label in {"卡号", "有效期"}
+
+        worker._fill_frame_input = fill
+
+        assert worker._fill_checkout_card(Card()) is None
+        assert calls == ["卡号", "有效期", "CVC"]
+
+    def test_submit_subscription_clicks_traditional_chinese_cta_inside_checkout_frame(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+        class FakeStates:
+            is_displayed = True
+
+        class FakeButton:
+            states = FakeStates()
+
+            def __init__(self):
+                self.clicked = False
+
+            class scroll:
+                @staticmethod
+                def to_see():
+                    return None
+
+            def click(self, by_js=False):
+                self.clicked = True
+
+        class FakeFrame:
+            html = "<html><body>thank you</body></html>"
+
+            def __init__(self):
+                self.button = FakeButton()
+
+            def ele(self, selector, timeout=0.5):
+                if selector == 'button[data-testid="action-container-cta-summary-panel-inline"]':
+                    return self.button
+                return None
+
+        frame = FakeFrame()
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker._find_checkout_frame = lambda timeout=10: frame
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        result = worker._submit_subscription()
+
+        assert result.success is True
+        assert frame.button.clicked is True
+
     def test_subscribe_flow_uses_upgrade_paywall_path_instead_of_direct_checkout_url(self):
         class Card:
             card_number = "4111111111111111"
@@ -675,7 +845,7 @@ class TestAdobeRegisterSubscribeCheckout:
         assert result.stage == "checkout"
         assert result.error == "unexpected_checkout_origin"
 
-    def test_checkout_card_requires_expiration_and_cvc(self):
+    def test_checkout_card_requires_expiration_but_not_cvc(self):
         class Card:
             card_number = "4111111111111111"
             exp_month = "01"
@@ -683,7 +853,7 @@ class TestAdobeRegisterSubscribeCheckout:
             cvc = "123"
 
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
-        worker._find_checkout_frame = lambda: object()
+        worker._find_credit_tokenizer_frame = lambda timeout=45: object()
         calls = []
 
         def fill(frame, selectors, value, label):
@@ -702,19 +872,21 @@ class TestAdobeRegisterSubscribeCheckout:
     def test_checkout_address_requires_billing_fields(self):
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
         calls = []
+        checkout_frame = object()
+        worker._find_checkout_frame = lambda timeout=10: checkout_frame
 
-        def fill(selectors, value, label):
-            calls.append(label)
+        def fill(context, selectors, value, label):
+            calls.append((context, label))
             return label != "账单姓"
 
-        worker._fill_page_input = fill
+        worker._fill_context_input = fill
 
         result = worker._fill_checkout_address()
 
         assert result is not None
         assert result.success is False
         assert result.error == "billing_last_name_not_found"
-        assert calls == ["账单名", "账单姓"]
+        assert calls == [(checkout_frame, "账单邮箱"), (checkout_frame, "账单名"), (checkout_frame, "账单姓")]
 
     def test_submit_subscription_does_not_treat_plain_firefly_redirect_as_success(self, monkeypatch):
         monkeypatch.setattr(time, "sleep", lambda seconds: None)
@@ -723,9 +895,32 @@ class TestAdobeRegisterSubscribeCheckout:
             url = "https://firefly.adobe.com/"
             html = "<html><body>Firefly home</body></html>"
 
+        class FakeStates:
+            is_displayed = True
+
+        class FakeButton:
+            states = FakeStates()
+
+            class scroll:
+                @staticmethod
+                def to_see():
+                    return None
+
+            def click(self, by_js=False):
+                return None
+
+        class FakeFrame:
+            html = "<html><body>Firefly home</body></html>"
+
+            def ele(self, selector, timeout=0.5):
+                if selector == 'button[data-testid="action-container-cta-summary-panel-inline"]':
+                    return FakeButton()
+                return None
+
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
         worker.page = FakePage()
-        worker._click_first_visible = lambda selectors, label, timeout=20: True
+        worker._find_checkout_frame = lambda timeout=10: FakeFrame()
+        worker._delay = lambda lo=0.5, hi=1.5: None
 
         result = worker._submit_subscription()
 

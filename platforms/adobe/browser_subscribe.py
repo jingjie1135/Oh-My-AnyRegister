@@ -17,6 +17,7 @@ import os
 import random
 import re
 import time
+import html
 from dataclasses import dataclass
 from typing import Callable, Optional
 from urllib.parse import urlparse
@@ -39,17 +40,46 @@ VISIBLE_BROWSER_WIDTH = _visible_browser_dimension("VNC_WIDTH", 1280, 640, 3840)
 VISIBLE_BROWSER_HEIGHT = _visible_browser_dimension("VNC_HEIGHT", 720, 480, 2160)
 
 
+def _html_to_text(value: str) -> str:
+    """Convert simple HTML email bodies into searchable text."""
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_adobe_code_from_mail_text(text: str) -> str:
+    """Extract Adobe's 6-digit verification code, preferring code-label proximity."""
+    source = _html_to_text(text)
+    label_pattern = re.compile(
+        r"(?:您的\s*)?(?:驗證碼|验证码|驗證|验证|verification\s*code|code\s*is|security\s*code)"
+        r"[^0-9]{0,80}(?<!#)(?<!\d)(\d{6})(?!\d)",
+        re.IGNORECASE,
+    )
+    match = label_pattern.search(source)
+    if match:
+        return match.group(1)
+
+    for match in re.finditer(r"(?<!#)(?<!\d)(\d{6})(?!\d)", source):
+        code = match.group(1)
+        if code != "177010":
+            return code
+    return ""
+
+
 def _extract_otp_code(result) -> str:
     """从 otp_callback 返回值中提取 6 位 Adobe 邮箱验证码。"""
     if isinstance(result, str):
         source = result.strip()
     elif isinstance(result, dict):
-        source = result.get('html_body') or result.get('body') or result.get('content') or result.get('text') or ""
+        source = " ".join(
+            str(result.get(key) or "")
+            for key in ("subject", "html_body", "body", "content", "text")
+        )
     else:
         return ""
 
-    m = re.search(r'(?<!#)(?<!\d)(\d{6})(?!\d)', source)
-    return m.group(1) if m else ""
+    return _extract_adobe_code_from_mail_text(source)
 
 
 def _build_otp_fill_js(code: str) -> str:

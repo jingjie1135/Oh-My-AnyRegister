@@ -5,12 +5,6 @@ from urllib.parse import urlparse
 from platforms.adobe.browser_register import AdobeBrowserRegister
 from platforms.adobe.browser_subscribe import SubscribeResult
 
-FIREFLY_PRO_CHECKOUT_URL = (
-    "https://milo.adobe.com/tools/ost"
-    "?osi=msg4m1782IVpeTz8mHd_P_0GG3OSG7XS932oW-7EGuM"
-    "&type=checkoutUrl&text=buy-now&workflowStep=commitment"
-)
-
 CHECKOUT_ALLOWED_HOST_SUFFIXES = (
     ".adobe.com",
     ".adobe.io",
@@ -353,12 +347,50 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             time.sleep(0.5)
         return None
 
+    def _find_paywall_frame(self, timeout: float = 20):
+        return self._find_frame_by_url_part("commerce.adobe.com/mini-apps/paywall", timeout=timeout)
+
+    def _find_checkout_frame(self, timeout: float = 20):
+        return self._find_frame_by_url_part("commerce.adobe.com/store/checkout", timeout=timeout)
+
+    def _find_credit_tokenizer_frame(self, timeout: float = 45):
+        selectors = [
+            'iframe[data-testid="credit-form-iframe"]',
+            'iframe[src*="tokui-commerce.adobe.com/tokenizer-ui/tokenizer"]',
+            'iframe[src*="tokenizer-ui/tokenizer"]',
+            'iframe[title*="Card"]',
+            'iframe[title*="Payment"]',
+        ]
+        start = time.time()
+        while time.time() - start < timeout:
+            contexts = [self.page]
+            checkout_frame = self._find_checkout_frame(timeout=1)
+            if checkout_frame:
+                contexts.insert(0, checkout_frame)
+            for context in contexts:
+                for selector in selectors:
+                    try:
+                        iframe = context.ele(selector, timeout=1)
+                        if not iframe:
+                            continue
+                        frame_getter = getattr(context, "get_frame", None) or self.page.get_frame
+                        frame = frame_getter(iframe)
+                        if frame:
+                            self._debug(f"找到信用卡 tokenizer iframe: {selector}")
+                            return frame
+                    except Exception as exc:
+                        self._debug(f"信用卡 tokenizer iframe 选择器失败 {selector}: {exc}")
+            time.sleep(1)
+        return None
+
     def _open_firefly_pro_trial_checkout(self) -> bool:
-        paywall_frame = self._find_frame_by_url_part("commerce.adobe.com/mini-apps/paywall", timeout=20)
+        paywall_frame = self._find_paywall_frame(timeout=20)
         if not paywall_frame:
             return False
         selectors = [
-            'button[aria-label*="Adobe Firefly Pro"]',
+            'button[aria-label="免費試用, Adobe Firefly Pro"]',
+            'button[aria-label="免费试用, Adobe Firefly Pro"]',
+            'button[aria-label="Free trial, Adobe Firefly Pro"]',
             'button[aria-label*="免費試用, Adobe Firefly Pro"]',
             'button[aria-label*="免费试用, Adobe Firefly Pro"]',
         ]
@@ -517,40 +549,20 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
         raise Exception(f"显式登录超时，当前 URL: {self.page.url}")
 
-    def _find_checkout_frame(self):
-        frame = self._find_frame_by_url_part("commerce.adobe.com/store/checkout", timeout=10)
-        if frame:
-            return frame
-        selectors = [
-            'iframe[data-testid="credit-form-iframe"]',
-            'iframe[title*="Card"]',
-            'iframe[title*="Payment"]',
-            'iframe[src*="payment"]',
-            'iframe[src*="checkout"]',
-            'iframe[src*="commerce"]',
-        ]
-        start = time.time()
-        while time.time() - start < 45:
-            for selector in selectors:
-                try:
-                    iframe = self.page.ele(selector, timeout=1)
-                    if iframe:
-                        frame = self.page.get_frame(iframe)
-                        if frame:
-                            self._debug(f"找到支付 iframe: {selector}")
-                            return frame
-                except Exception as exc:
-                    self._debug(f"支付 iframe 选择器失败 {selector}: {exc}")
-            time.sleep(1)
-        return None
-
     def _fill_frame_input(self, frame, selectors: list[str], value: str, label: str) -> bool:
+        return self._fill_context_input(frame, selectors, value, label)
+
+    def _fill_context_input(self, context, selectors: list[str], value: str, label: str) -> bool:
         for selector in selectors:
             try:
-                element = frame.ele(selector, timeout=2)
+                element = context.ele(selector, timeout=2)
                 if element and element.states.is_displayed:
                     if self._safe_type(element, value):
                         self.log(f"✅ {label} 已填写")
+                        try:
+                            element.run_js('this.dispatchEvent(new Event("change", {bubbles:true})); this.dispatchEvent(new Event("blur", {bubbles:true}));')
+                        except Exception:
+                            pass
                         return True
             except Exception as exc:
                 self._debug(f"填写 {label} 失败 ({selector}): {exc}")
@@ -567,12 +579,13 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
     def _fill_checkout_card(self, card) -> SubscribeResult | None:
         self.log("[Adobe] 9. 填写 Firefly Pro 结算信息...")
-        frame = self._find_checkout_frame()
+        frame = self._find_credit_tokenizer_frame()
         if not frame:
             return SubscribeResult(False, "fill_card", "信用卡 iFrame 未加载", "iframe_not_found")
 
         if not self._fill_frame_input(frame, [
             'input[autocomplete="cc-number"]',
+            '#card-number',
             'input[name="cardNumber"]',
             '#cardNumber',
             'input[type="tel"]',
@@ -592,29 +605,42 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             'input[autocomplete="cc-csc"]',
             'input[name="securityCode"]',
             '#securityCode',
+            '#cvc',
+            '#cvv',
+            'input[id*="cvc" i]',
+            'input[id*="cvv" i]',
             'input[placeholder*="CVC"]',
             'input[placeholder*="CVV"]',
         ], card.cvc, "CVC"):
-            return SubscribeResult(False, "fill_card", "iFrame 内找不到 CVC 输入框", "card_cvc_not_found")
+            self.log("ℹ️ 当前 checkout 结构无显式 CVC 字段，继续后续校验")
         return None
 
     def _fill_checkout_address(self) -> SubscribeResult | None:
         from core.virtual_card import generate_random_address
 
+        checkout_frame = self._find_checkout_frame(timeout=10)
+        if not checkout_frame:
+            return SubscribeResult(False, "fill_address", "找不到 checkout iFrame", "checkout_frame_not_found")
         address = generate_random_address()
-        if not self._fill_page_input([
+        if not self._fill_context_input(checkout_frame, [
+            '#email-input-field',
+            'input[name="email"]',
+            'input[type="email"]',
+        ], getattr(address, "email", "") or "", "账单邮箱"):
+            self._debug("checkout 未要求邮箱或邮箱字段不可见，继续填写账单姓名")
+        if not self._fill_context_input(checkout_frame, [
             '#firstName',
             'input[name="firstName"]',
             'input[autocomplete="given-name"]',
         ], address.first_name, "账单名"):
             return SubscribeResult(False, "fill_address", "找不到账单名输入框", "billing_first_name_not_found")
-        if not self._fill_page_input([
+        if not self._fill_context_input(checkout_frame, [
             '#lastName',
             'input[name="lastName"]',
             'input[autocomplete="family-name"]',
         ], address.last_name, "账单姓"):
             return SubscribeResult(False, "fill_address", "找不到账单姓输入框", "billing_last_name_not_found")
-        if not self._fill_page_input([
+        if not self._fill_context_input(checkout_frame, [
             '#postalCode',
             'input[name="postalCode"]',
             'input[autocomplete="postal-code"]',
@@ -633,7 +659,11 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
     def _submit_subscription(self) -> SubscribeResult:
         self.log("[Adobe] 10. 提交 Firefly Pro 订阅...")
-        clicked = self._click_first_visible([
+        checkout_frame = self._find_checkout_frame(timeout=10)
+        if not checkout_frame:
+            return SubscribeResult(False, "submit", "找不到 checkout iFrame", "checkout_frame_not_found")
+        clicked = self._click_first_visible_in_context(checkout_frame, [
+            'button[data-testid="action-container-cta-summary-panel-inline"]',
             'button[data-id="checkout-submit-button"]',
             'button[type="submit"]',
             'button[aria-label*="Subscribe"]',
@@ -643,6 +673,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             'tag:button@@text():Subscribe',
             'tag:button@@text():Place order',
             'tag:button@@text():Review order',
+            'tag:button@@text():同意並訂閱',
             'tag:button@@text():同意并订阅',
         ], "提交订阅", timeout=20)
         if not clicked:
@@ -651,7 +682,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         for index in range(60):
             page_text = ""
             try:
-                page_text = (self.page.html or "").lower()
+                page_text = (getattr(checkout_frame, "html", "") or getattr(self.page, "html", "") or "").lower()
             except Exception:
                 pass
 
@@ -672,7 +703,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                 if pattern in page_text:
                     return SubscribeResult(False, "verify", message, pattern)
             if index in {8, 16}:
-                self._click_first_visible([
+                self._click_first_visible_in_context(checkout_frame, [
                     'button[data-id="checkout-submit-button"]',
                     'button[type="submit"]',
                     'tag:button@@text():Confirm',
@@ -681,6 +712,22 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                 ], "二次确认订阅", timeout=2)
             time.sleep(1)
         return SubscribeResult(False, "verify", "等待超时，请手动检查订阅状态", "result_timeout")
+
+    def _click_first_visible_in_context(self, context, selectors: list[str], label: str, timeout: float = 8) -> bool:
+        start = time.time()
+        while time.time() - start < timeout:
+            for selector in selectors:
+                try:
+                    element = context.ele(selector, timeout=0.5)
+                    if element and element.states.is_displayed and self._click_element(element):
+                        self.log(f"✅ 点击成功: {label} ({selector})")
+                        self._delay(0.5, 1)
+                        return True
+                except Exception as exc:
+                    self._debug(f"选择器不可用 {selector}: {exc}")
+            time.sleep(0.5)
+        self.log(f"⚠️ 未找到可点击元素: {label}")
+        return False
 
     def _subscribe_firefly_pro(self, card) -> SubscribeResult:
         if not card:

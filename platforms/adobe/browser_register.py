@@ -481,7 +481,9 @@ class AdobeBrowserRegister:
         """检测 Arkose Labs 人机验证是否仍在页面上。"""
         selectors = [
             'xpath://iframe[contains(@src, "arkoselabs")]',
+            'xpath://iframe[contains(@src, "arks-client.adobe.com")]',
             'xpath://iframe[contains(@title, "Arkose")]',
+            'xpath://iframe[contains(@title, "Verification challenge")]',
             'xpath://iframe[contains(@src, "funcaptcha")]',
         ]
         for sel in selectors:
@@ -491,7 +493,141 @@ class AdobeBrowserRegister:
                     return True
             except Exception:
                 continue
+        try:
+            for iframe in self.page.eles("iframe", timeout=1) or []:
+                src = str(iframe.attr("src") or "").lower()
+                title = str(iframe.attr("title") or "").lower()
+                if "arks-client.adobe.com" in src or "verification challenge" in title:
+                    if iframe.states.is_displayed:
+                        return True
+        except Exception:
+            pass
         return False
+
+    def _fill_signup_credentials(self, email: str, password: str) -> str:
+        self.log("[Adobe] 2. 填写邮箱与密码...")
+        email_field = None
+        for sel in ['#Signup-EmailField', '#EmailPage-EmailField', 'input[type="email"]']:
+            email_field = self.page.ele(sel, timeout=3)
+            if email_field:
+                break
+
+        if not email_field:
+            self._find_and_click(['使用电子邮件注册', '使用电子邮件继续注册'], timeout=10, label="邮箱入口")
+            self._wait_page_ready()
+            for sel in ['#Signup-EmailField', '#EmailPage-EmailField', 'input[type="email"]']:
+                email_field = self.page.ele(sel, timeout=3)
+                if email_field:
+                    break
+
+        if not email_field:
+            raise Exception("找不到邮箱输入框！")
+
+        if not self._safe_type_and_confirm(email_field, email, "邮箱"):
+            raise Exception("邮箱输入未完成，停止继续点击")
+        self._delay(0.5, 1.0)
+
+        pwd_field = None
+        for sel in ['#Signup-PasswordField', '#PasswordPage-PasswordField', 'input[type="password"]']:
+            pwd_field = self.page.ele(sel, timeout=3)
+            if pwd_field:
+                break
+
+        if pwd_field and not self._safe_type_and_confirm(pwd_field, password, "密码"):
+            raise Exception("密码输入未完成，停止继续点击")
+
+        if not self._click_step1_continue(timeout=12):
+            self.page.actions.key_down('Enter').key_up('Enter')
+            self._delay(1, 2)
+
+        step_wait_start = time.time()
+        while time.time() - step_wait_start < 15:
+            if self._is_signup_profile_step():
+                return "profile"
+            if self._is_email_verify_page():
+                return "email_verify"
+            if self._find_visible_input(['#Signup-PasswordField', '#PasswordPage-PasswordField', 'input[type="password"]'], timeout=0.5):
+                break
+            time.sleep(1)
+
+        if not self._is_signup_profile_step() and not self._is_email_verify_page():
+            raise Exception(f"Step1 继续后未进入资料页或验证码页，当前 URL: {self.page.url}")
+        return "email_verify" if self._is_email_verify_page() else "profile"
+
+    def _select_signup_birth_month(self, month: int) -> None:
+        month_field = self.page.ele('#Signup-DateOfBirthChooser-Month', timeout=3) or self.page.ele('[data-id="DateOfBirthChooser-Month"]', timeout=3)
+        if not month_field:
+            month_field = self.page.ele('select[name="month"]', timeout=3)
+        if not month_field:
+            return
+        try:
+            month_field.select.by_value(str(month))
+            return
+        except Exception:
+            pass
+        month_field.click()
+        self._delay()
+        month_names = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
+        target = month_names[month]
+        start = time.time()
+        while time.time() - start < 5:
+            try:
+                for option in self.page.eles('[role="option"]', timeout=1) or []:
+                    if option.states.is_displayed and target in str(option.text or ""):
+                        option.click()
+                        self._delay(0.2, 0.4)
+                        return
+            except Exception:
+                pass
+            if self._find_and_click([target], timeout=1):
+                return
+
+    def _fill_signup_profile(self) -> None:
+        prof = self._registration_profile
+        self.log("[Adobe] 3. 填写个人资料信息...")
+        if self._is_email_verify_page():
+            self.log("[Adobe] 已直接进入邮箱验证码页，跳过个人资料填写")
+            return
+        if not self._is_signup_profile_step():
+            raise Exception(f"未检测到个人资料页，停止提交注册，当前 URL: {self.page.url}")
+
+        fn_field = self.page.ele('#Signup-FirstNameField', timeout=3) or self.page.ele('input[name="firstName"]', timeout=3)
+        if not self._safe_type(fn_field, prof["fn"]):
+            raise Exception("First name 输入失败")
+        ln_field = self.page.ele('#Signup-LastNameField', timeout=3) or self.page.ele('input[name="lastName"]', timeout=3)
+        if not self._safe_type(ln_field, prof["ln"]):
+            raise Exception("Last name 输入失败")
+        self._select_signup_birth_month(int(prof["month"]))
+        self._delay(0.5)
+        year_field = self.page.ele('#Signup-DateOfBirthChooser-Year', timeout=3) or self.page.ele('input[name="year"]', timeout=3)
+        if not self._safe_type(year_field, str(prof["year"])):
+            raise Exception("Year 输入失败")
+        self._delay(0.5, 1)
+
+    def _submit_signup_profile(self) -> str:
+        if self._is_email_verify_page():
+            return "email_verify"
+        self.log("[Adobe] 4. 提交注册...")
+        url_before = self.page.url
+        for err_text in ['不允许使用此电子邮件地址', '不符合我们的要求', 'Please use another email address', 'not permitted']:
+            err_ele = self.page.ele(f'text:{err_text}', timeout=1)
+            if err_ele and err_ele.states.is_displayed:
+                raise Exception(f"暂不支持该邮箱域名: {err_ele.text}")
+
+        submit_btn = self.page.ele('[data-id="Signup-CreateAccountBtn"]', timeout=2) or self.page.ele('tag:button@@text():创建帐户', timeout=2) or self.page.ele('tag:button@@text():Create account', timeout=2)
+        if submit_btn and submit_btn.states.is_displayed:
+            submit_btn.scroll.to_see()
+            self._delay()
+            submit_btn.click()
+        else:
+            self._find_and_click(['创建帐户', 'Create account'], timeout=5, tag_filter=['button'])
+
+        self._wait_page_ready()
+        self.log("[Adobe] 5. 等待 Arkose / 邮箱验证码环节...")
+        submit_state = self._wait_after_submit_for_verification(url_before, timeout=300)
+        if submit_state == "timeout":
+            raise Exception("提交注册后等待 Arkose/邮箱验证码/成功跳转超时")
+        return submit_state
 
     def _is_email_verify_page(self) -> bool:
         """检测是否已经进入 Adobe 邮箱验证码页面。"""
@@ -682,129 +818,16 @@ class AdobeBrowserRegister:
         return ""
 
     def _register_account(self, email: str, password: str) -> None:
-        prof = self._registration_profile
-
-        # 1. 导航
-        self.log("[Adobe] 1. 导航到目标地址...")
-        self.page.get(self.SIGNUP_URL)
-        self._wait_page_ready(20)
-        self._delay(2, 3)
-
-        # 2. 账号填写
-        self.log("[Adobe] 2. 填写邮箱与密码...")
-        email_field = None
-        for sel in ['#EmailPage-EmailField', '#Signup-EmailField', 'input[type="email"]']:
-            email_field = self.page.ele(sel, timeout=3)
-            if email_field:
-                break
-
-        if not email_field:
-            self._find_and_click(['使用电子邮件注册', '使用电子邮件继续注册'], timeout=10, label="邮箱入口")
-            self._wait_page_ready()
-            for sel in ['#EmailPage-EmailField', '#Signup-EmailField', 'input[type="email"]']:
-                email_field = self.page.ele(sel, timeout=3)
-                if email_field:
-                    break
-
-        if not email_field:
-            raise Exception("找不到邮箱输入框！")
-
-        if not self._safe_type_and_confirm(email_field, email, "邮箱"):
-            raise Exception("邮箱输入未完成，停止继续点击")
-        self._delay(0.5, 1.0)
-
-        pwd_field = None
-        for sel in ['#PasswordPage-PasswordField', '#Signup-PasswordField', 'input[type="password"]']:
-            pwd_field = self.page.ele(sel, timeout=3)
-            if pwd_field:
-                break
-            
-        if pwd_field:
-            if not self._safe_type_and_confirm(pwd_field, password, "密码"):
-                raise Exception("密码输入未完成，停止继续点击")
-
-        if not self._click_step1_continue(timeout=12):
-            self.page.actions.key_down('Enter').key_up('Enter')
-            self._delay(1, 2)
-
-        step_wait_start = time.time()
-        while time.time() - step_wait_start < 15:
-            if self._is_signup_profile_step() or self._is_email_verify_page():
-                break
-            if self._find_visible_input(['#PasswordPage-PasswordField', '#Signup-PasswordField', 'input[type="password"]'], timeout=0.5):
-                break
-            time.sleep(1)
-
-        if not self._is_signup_profile_step() and not self._is_email_verify_page():
-            raise Exception(f"Step1 继续后未进入资料页或验证码页，当前 URL: {self.page.url}")
-
+        self.log("[Adobe] 1. 使用当前 Adobe 注册页继续...")
+        step_state = self._fill_signup_credentials(email, password)
         self._delay(3, 5)
         self._wait_page_ready()
 
-        # 3. 个人资料填写
-        self.log("[Adobe] 3. 填写个人资料信息...")
-        if self._is_email_verify_page():
-            self.log("[Adobe] 已直接进入邮箱验证码页，跳过个人资料填写")
-        elif not self._is_signup_profile_step():
-            raise Exception(f"未检测到个人资料页，停止提交注册，当前 URL: {self.page.url}")
-        elif not pwd_field:
-            pwd_field2 = self.page.ele('input[type="password"]', timeout=3)
-            if pwd_field2:
-                self._safe_type(pwd_field2, password)
-
-        if self._is_signup_profile_step():
-            fn_field = self.page.ele('#Signup-FirstNameField', timeout=3) or self.page.ele('input[name="firstName"]', timeout=3)
-            if not self._safe_type(fn_field, prof["fn"]):
-                raise Exception("First name 输入失败")
-            ln_field = self.page.ele('#Signup-LastNameField', timeout=3) or self.page.ele('input[name="lastName"]', timeout=3)
-            if not self._safe_type(ln_field, prof["ln"]):
-                raise Exception("Last name 输入失败")
-
-            month_field = self.page.ele('#Signup-DateOfBirthChooser-Month', timeout=3) or self.page.ele('select[name="month"]', timeout=3)
-            if month_field:
-                try:
-                    month_field.select.by_value(str(prof["month"]))
-                except Exception:
-                    month_field.click()
-                    self._delay()
-                    month_names = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
-                    self._find_and_click([month_names[prof["month"]]], timeout=5)
-            
-            self._delay(0.5)
-            year_field = self.page.ele('#Signup-DateOfBirthChooser-Year', timeout=3) or self.page.ele('input[name="year"]', timeout=3)
-            if not self._safe_type(year_field, str(prof["year"])):
-                raise Exception("Year 输入失败")
-            self._delay(0.5, 1)
-
-        if self._is_email_verify_page():
+        if step_state == "email_verify":
             verify_page = True
         else:
-            # 4. 提交
-            self.log("[Adobe] 4. 提交注册...")
-            url_before = self.page.url
-            
-            # 检测是否有错误提示
-            for err_text in ['不允许使用此电子邮件地址', '不符合我们的要求', 'Please use another email address', 'not permitted']:
-                err_ele = self.page.ele(f'text:{err_text}', timeout=1)
-                if err_ele and err_ele.states.is_displayed:
-                    raise Exception(f"暂不支持该邮箱域名: {err_ele.text}")
-            
-            submit_btn = self.page.ele('tag:button@@text():创建帐户', timeout=2) or self.page.ele('tag:button@@text():Create account', timeout=2)
-            if submit_btn and submit_btn.states.is_displayed:
-                submit_btn.scroll.to_see()
-                self._delay()
-                submit_btn.click()
-            else:
-                self._find_and_click(['创建帐户', 'Create account'], timeout=5, tag_filter=['button'])
-
-            # 检测 Arkose / 邮箱验证码 / 成功跳转。
-            # Arkose 通常需要人工介入，不能把短时间未出现邮箱验证码当作跳过。
-            self._wait_page_ready()
-            self.log("[Adobe] 5. 等待 Arkose / 邮箱验证码环节...")
-            submit_state = self._wait_after_submit_for_verification(url_before, timeout=300)
-            if submit_state == "timeout":
-                raise Exception("提交注册后等待 Arkose/邮箱验证码/成功跳转超时")
-            verify_page = submit_state == "email_verify"
+            self._fill_signup_profile()
+            verify_page = self._submit_signup_profile() == "email_verify"
 
         if verify_page:
             self.log("📧 检测到验证码页面，呼叫 otp_callback 触发接码...")
