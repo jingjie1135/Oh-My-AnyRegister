@@ -66,3 +66,10 @@ REFACTOR-PLAN.md
 
 # 敏感文件
 *.har
+
+# Adobe/Firefly 页面探测临时产物
+extract_*.py
+firefly_dump.html
+btns.txt
+current_btns_en.txt
+links.txt
