@@ -104,6 +104,10 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             return
 
         clicked = self._click_first_visible([
+            'button.profile-comp.secondary-button',
+            '.profile-comp.secondary-button',
+            'button.profile-comp',
+            '.profile-comp',
             'a[href*="signin"]',
             'a[href*="deeplink=signin"]',
             'a[href*="auth.services.adobe.com"]',

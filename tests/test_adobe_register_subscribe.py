@@ -206,7 +206,11 @@ class TestAdobeRegisterSubscribeLogin:
         worker._wait_page_ready = lambda timeout=15: True
         worker._delay = lambda lo=0.5, hi=1.5: None
 
-        worker._click_first_visible = lambda selectors, label, timeout=12: False
+        def fail_click(selectors, label, timeout=8):
+            return False
+        worker._click_first_visible = fail_click
+        worker._looks_logged_in = lambda: False
+
         import pytest
         with pytest.raises(Exception, match="无法找到 Firefly 登录入口"):
             worker._open_firefly_login_entry()
