@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from platforms.adobe.browser_register import AdobeBrowserRegister
-from platforms.adobe.browser_subscribe import LOGIN_URL, SubscribeResult
+from platforms.adobe.browser_subscribe import SubscribeResult
 
 FIREFLY_PRO_CHECKOUT_URL = (
     "https://milo.adobe.com/tools/ost"
@@ -95,27 +95,90 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         sign_in = self._visible_element('text:Sign in', timeout=0.3) or self._visible_element('text:登录', timeout=0.3)
         return sign_in is None and "firefly.adobe.com" in current_url
 
-    def _submit_login_otp_if_needed(self) -> bool:
+    def _open_firefly_login_entry(self) -> None:
+        """Open Firefly and prefer its real sign-in link over a static auth deeplink."""
+        self.page.get("https://firefly.adobe.com/")
+        self._wait_page_ready(20)
+        self._delay(2, 3)
+        if self._looks_logged_in():
+            return
+
+        clicked = self._click_first_visible([
+            'a[href*="signin"]',
+            'a[href*="deeplink=signin"]',
+            'a[href*="auth.services.adobe.com"]',
+            'button[data-testid*="sign-in"]',
+            'button[data-test-id*="sign-in"]',
+            'button[aria-label*="Sign in"]',
+            'button[aria-label*="登录"]',
+            'tag:a@@text():Sign in',
+            'tag:button@@text():Sign in',
+            'tag:a@@text():登录',
+            'tag:button@@text():登录',
+            'text:Sign in',
+            'text:登录',
+        ], "Firefly 真实登录入口", timeout=12)
+        if clicked:
+            self._wait_page_ready(20)
+            self._delay(2, 3)
+            return
+
+        self.log("⚠️ 未在 Firefly 首页找到真实登录入口，放弃自动登录")
+        raise Exception("无法找到 Firefly 登录入口")
+
+    def _find_visible_password_field(self, timeout: float = 0.5):
+        return self._find_first_visible([
+            '#PasswordPage-PasswordField',
+            'input[data-id="PasswordPage-PasswordField"]',
+            'input[name="passwd"]',
+            'input[name="password"]',
+            'input[type="password"]',
+        ], "登录密码", timeout=timeout)
+
+    def _is_login_mfa_visible(self) -> bool:
         current_url = self.page.url or ""
-        is_mfa = (
-            "challenge" in current_url
-            or self._visible_element('text:Enter the code', timeout=0.3)
+        if "challenge" in current_url:
+            return True
+        return bool(
+            self._visible_element('text:Enter the code', timeout=0.3)
             or self._visible_element('text:Verify your identity', timeout=0.3)
             or self._visible_element('text:验证您的身份', timeout=0.3)
             or self._visible_element('text:验证您的电子邮件', timeout=0.3)
+            or self._visible_element('text:获取验证码', timeout=0.3)
+            or self._visible_element('text:发送验证码', timeout=0.3)
+            or self._visible_element('text:Send code', timeout=0.3)
         )
-        if not is_mfa:
+
+    def _collect_existing_login_otp_codes(self) -> set[str]:
+        if not self._otp_callback:
+            return set()
+        try:
+            result = self._otp_callback()
+        except Exception as exc:
+            self._debug(f"预读取登录验证码失败，忽略旧码过滤: {exc}")
+            return set()
+        if not result:
+            return set()
+        from platforms.adobe.browser_subscribe import _extract_otp_code
+        code = _extract_otp_code(result)
+        return {code} if code else set()
+
+    def _submit_login_otp_if_needed(self, trigger_send: bool = True) -> bool:
+        if not self._is_login_mfa_visible():
             return False
 
         self.log("🛡️ 登录阶段检测到邮箱验证码，开始接码...")
-        self._click_first_visible([
-            'button[data-id="ChallengePage-ContinueButton"]',
-            'button[type="submit"]',
-            'tag:button@@text():Send code',
-            'tag:button@@text():发送验证码',
-            'tag:button@@text():继续',
-            'tag:button@@text():Continue',
-        ], "触发登录验证码", timeout=3)
+        stale_codes = self._collect_existing_login_otp_codes()
+        if trigger_send:
+            self._click_first_visible([
+                'button[data-id="ChallengePage-ContinueButton"]',
+                'button[type="submit"]',
+                'tag:button@@text():Send code',
+                'tag:button@@text():发送验证码',
+                'tag:button@@text():继续',
+                'tag:button@@text():Continue',
+            ], "触发登录验证码", timeout=3)
+            self._delay(2, 3)
 
         if not self._otp_callback:
             raise Exception("登录 MFA 需要邮箱验证码，但未提供 otp_callback")
@@ -127,6 +190,10 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                 from platforms.adobe.browser_subscribe import _extract_otp_code
                 code = _extract_otp_code(result)
                 if code:
+                    if code in stale_codes:
+                        self._debug(f"跳过触发前已存在的旧登录验证码: {code}")
+                        time.sleep(5)
+                        continue
                     self.log(f"🔑 登录验证码: {code}")
                     if self._fill_otp_code(code):
                         self._click_first_visible([
@@ -144,21 +211,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
 
     def _ensure_logged_in(self, email: str, password: str) -> None:
         self.log("[Adobe] 7. 确认并补齐 Adobe 登录态...")
-        try:
-            self.page.get("https://firefly.adobe.com/")
-            self._wait_page_ready(20)
-            self._delay(2, 3)
-        except Exception as exc:
-            self._debug(f"访问 Firefly 检查登录态失败: {exc}")
-
-        if self._looks_logged_in():
-            self.log("✅ 当前浏览器已具备 Adobe 登录态")
-            return
-
-        self.log("[Adobe] 注册后未处于完整登录态，开始显式登录...")
-        self.page.get(LOGIN_URL)
-        self._wait_page_ready(20)
-        self._delay(2, 3)
+        self._open_firefly_login_entry()
 
         email_field = self._find_first_visible([
             '#EmailPage-EmailField',
@@ -179,38 +232,35 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             self._delay(1, 2)
 
         start = time.time()
-        password_handled = False
+        password_submit_count = 0
+        mfa_triggered = False
         while time.time() - start < 150:
             if self._looks_logged_in():
                 self.log("✅ 显式登录完成")
                 return
 
-            if self._submit_login_otp_if_needed():
+            password_field = self._find_visible_password_field(timeout=2)
+            if password_field and password_submit_count < 2:
+                if not self._safe_type_and_confirm(password_field, password, "登录密码"):
+                    raise Exception("登录密码输入未完成")
+                self._click_first_visible([
+                    'button[data-id="PasswordPage-ContinueButton"]',
+                    'button[type="submit"]',
+                    'tag:button@@text():Sign in',
+                    'tag:button@@text():登录',
+                    'tag:button@@text():Continue',
+                    'tag:button@@text():继续',
+                ], "密码继续", timeout=8)
+                password_submit_count += 1
+                self._wait_page_ready(15)
+                self._delay(3, 5)
                 continue
 
-            if not password_handled:
-                password_field = self._find_first_visible([
-                    '#PasswordPage-PasswordField',
-                    'input[data-id="PasswordPage-PasswordField"]',
-                    'input[name="passwd"]',
-                    'input[name="password"]',
-                    'input[type="password"]',
-                ], "登录密码", timeout=2)
-                if password_field:
-                    if not self._safe_type_and_confirm(password_field, password, "登录密码"):
-                        raise Exception("登录密码输入未完成")
-                    self._click_first_visible([
-                        'button[data-id="PasswordPage-ContinueButton"]',
-                        'button[type="submit"]',
-                        'tag:button@@text():Sign in',
-                        'tag:button@@text():登录',
-                        'tag:button@@text():Continue',
-                        'tag:button@@text():继续',
-                    ], "密码继续", timeout=8)
-                    password_handled = True
-                    self._wait_page_ready(10)
-                    self._delay(2, 4)
-                    continue
+            if self._submit_login_otp_if_needed(trigger_send=not mfa_triggered):
+                mfa_triggered = True
+                self._wait_page_ready(15)
+                self._delay(3, 5)
+                continue
 
             time.sleep(1)
 

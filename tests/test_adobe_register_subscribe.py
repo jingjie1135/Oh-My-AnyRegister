@@ -1,6 +1,8 @@
 """Unit tests for Adobe register + subscribe workflow."""
 from __future__ import annotations
 
+import time
+
 from platforms.adobe.browser_register_subscribe import (
     FIREFLY_PRO_CHECKOUT_URL,
     AdobeBrowserRegisterSubscribe,
@@ -141,4 +143,165 @@ class TestAdobeRegisterSubscribeRun:
 
         assert result["extra"]["subscription"]["success"] is False
         assert result["extra"]["subscription"]["error"] == "card_missing"
+
+
+class TestAdobeRegisterSubscribeLogin:
+    def test_login_entry_clicks_firefly_sign_in_and_raises_if_not_found(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeElement:
+            states = FakeStates()
+
+            def __init__(self, page):
+                self.page = page
+
+            class scroll:
+                @staticmethod
+                def to_see():
+                    return None
+
+            def click(self, by_js=False):
+                self.page.url = "https://auth.services.adobe.com/signin/from-firefly"
+
+        class FakePage:
+            def __init__(self):
+                self.url = ""
+                self.visited = []
+
+            def get(self, url):
+                self.visited.append(url)
+                self.url = url
+
+            def ele(self, selector, timeout=0.5):
+                if selector in {'a[href*="signin"]', 'a[href*="deeplink=signin"]', 'text:Sign in'}:
+                    return FakeElement(self)
+                return None
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._open_firefly_login_entry()
+
+        assert worker.page.visited == ["https://firefly.adobe.com/"]
+        assert worker.page.url == "https://auth.services.adobe.com/signin/from-firefly"
+
+    def test_login_entry_raises_if_not_found(self):
+        class FakePage:
+            def __init__(self):
+                self.url = ""
+                self.visited = []
+
+            def get(self, url):
+                self.visited.append(url)
+                self.url = url
+
+            def ele(self, selector, timeout=0.5):
+                return None
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._click_first_visible = lambda selectors, label, timeout=12: False
+        import pytest
+        with pytest.raises(Exception, match="无法找到 Firefly 登录入口"):
+            worker._open_firefly_login_entry()
+
+    def test_login_otp_ignores_code_seen_before_trigger(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+        codes = iter(["Adobe code 111111", "Adobe code 111111", "Adobe code 222222"])
+        filled = []
+
+        worker = AdobeBrowserRegisterSubscribe(
+            log_fn=lambda message: None,
+            otp_callback=lambda: next(codes),
+        )
+        worker.page = type("FakePage", (), {"url": "https://auth.services.adobe.com/challenge"})()
+        worker._visible_element = lambda selector, timeout=0.3: object() if selector == 'text:Enter the code' else None
+        worker._click_first_visible = lambda selectors, label, timeout=3: True
+        worker._fill_otp_code = lambda code: filled.append(code) or True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._submit_login_otp_if_needed() is True
+        assert filled == ["222222"]
+
+    def test_ensure_logged_in_handles_otp_before_password(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+        calls = []
+
+        class FakePage:
+            url = "https://auth.services.adobe.com/challenge"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._open_firefly_login_entry = lambda: calls.append("entry")
+        worker._looks_logged_in = lambda: calls.count("password") > 0
+        worker._submit_login_otp_if_needed = lambda trigger_send=True: calls.append("otp") or True
+
+        def find_first_visible(selectors, label, timeout=10):
+            if label == "登录密码" and calls.count("otp") > 0:
+                return object()
+            return None
+
+        worker._find_first_visible = find_first_visible
+        worker._safe_type_and_confirm = lambda element, value, label: calls.append("password") or True
+        worker._click_first_visible = lambda selectors, label, timeout=8: calls.append("password_continue") or True
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._ensure_logged_in("user@example.com", "Secret123!")
+
+        assert calls == ["entry", "otp", "password", "password_continue"]
+
+    def test_ensure_logged_in_handles_password_before_otp(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+        calls = []
+
+        class FakePage:
+            url = "https://auth.services.adobe.com/signin"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._open_firefly_login_entry = lambda: calls.append("entry")
+        worker._looks_logged_in = lambda: any(call.startswith("otp") for call in calls)
+        worker._submit_login_otp_if_needed = lambda trigger_send=True: calls.append(f"otp:{trigger_send}") or True
+
+        def find_first_visible(selectors, label, timeout=10):
+            if label == "登录密码" and calls.count("password") == 0:
+                return object()
+            return None
+
+        worker._find_first_visible = find_first_visible
+        worker._safe_type_and_confirm = lambda element, value, label: calls.append("password") or True
+        worker._click_first_visible = lambda selectors, label, timeout=8: calls.append("password_continue") or True
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._ensure_logged_in("user@example.com", "Secret123!")
+
+        assert calls == ["entry", "password", "password_continue", "otp:True"]
+
+    def test_repeated_login_mfa_detection_does_not_retrigger_send_code(self, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
+        calls = []
+
+        class FakePage:
+            url = "https://auth.services.adobe.com/challenge"
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._open_firefly_login_entry = lambda: None
+        worker._looks_logged_in = lambda: len([call for call in calls if call.startswith("otp")]) >= 2
+        worker._find_visible_password_field = lambda timeout=2: None
+        worker._submit_login_otp_if_needed = lambda trigger_send=True: calls.append(f"otp:{trigger_send}") or True
+        worker._wait_page_ready = lambda timeout=15: True
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._ensure_logged_in("user@example.com", "Secret123!")
+
+        assert calls == ["otp:True", "otp:False"]
 
