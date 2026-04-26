@@ -203,6 +203,9 @@ function RegisterModal({
     executorType: '',
   })
   const [keepBrowserOpen, setKeepBrowserOpen] = useState(false)
+  const [autoSubscribe, setAutoSubscribe] = useState(false)
+  const [autoSubscribeCardId, setAutoSubscribeCardId] = useState<number | ''>('')
+  const [virtualCards, setVirtualCards] = useState<any[]>([])
   const [taskId, setTaskId] = useState<string | null>(null)
   const [done, setDone] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -229,9 +232,10 @@ function RegisterModal({
     Promise.all([
       getConfig().catch(() => ({})),
       getConfigOptions().catch(() => null),
-      apiFetch('/upload-channels').catch(() => [])
+      apiFetch('/upload-channels').catch(() => []),
+      apiFetch('/virtual-cards').catch(() => [])
     ])
-      .then(([cfg, options, chs]) => {
+      .then(([cfg, options, chs, cards]) => {
         if (!active) return
         setConfig(cfg || {})
         if (options) {
@@ -240,6 +244,7 @@ function RegisterModal({
         if (chs) {
           setChannels(chs || [])
         }
+        setVirtualCards(Array.isArray(cards) ? cards : [])
       })
       .catch(() => {
         if (!active) return
@@ -321,6 +326,18 @@ function RegisterModal({
   }, [selection.identityProvider, selection.oauthProvider, selection.executorType, supportedExecutors, reusableBrowser])
 
   const defaultMailboxProvider = (configOptions.mailbox_settings || []).find(item => item.is_default) || configOptions.mailbox_settings?.[0] || null
+  const canAutoSubscribe = platform === 'adobe' && selection.identityProvider === 'mailbox' && ['headless', 'headed'].includes(selection.executorType)
+  const cardOptions = virtualCards.map((card: any) => [String(card.id), card.label || `虚拟卡 #${card.id}`])
+
+  useEffect(() => {
+    if (!canAutoSubscribe && autoSubscribe) {
+      setAutoSubscribe(false)
+      setAutoSubscribeCardId('')
+    }
+    if (autoSubscribe && keepBrowserOpen) {
+      setKeepBrowserOpen(false)
+    }
+  }, [canAutoSubscribe, autoSubscribe, keepBrowserOpen])
 
   const start = async () => {
     setStarting(true)
@@ -332,7 +349,11 @@ function RegisterModal({
         oauth_email_hint: cfg.oauth_email_hint,
         chrome_user_data_dir: cfg.chrome_user_data_dir,
         chrome_cdp_url: cfg.chrome_cdp_url,
-        keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
+        keep_browser_open: selection.executorType === 'headed' && !autoSubscribe ? keepBrowserOpen : false,
+      }
+      if (autoSubscribe && canAutoSubscribe) {
+        extra.auto_subscribe = true
+        extra.card_id = Number(autoSubscribeCardId)
       }
       if (autoUploadId) {
         extra.auto_upload_channel_id = autoUploadId
@@ -349,7 +370,7 @@ function RegisterModal({
           platform, count: regCount, concurrency,
           executor_type: selection.executorType,
           captcha_solver: 'auto',
-          keep_browser_open: selection.executorType === 'headed' ? keepBrowserOpen : false,
+          keep_browser_open: selection.executorType === 'headed' && !autoSubscribe ? keepBrowserOpen : false,
           proxy: null,
           extra,
         }),
@@ -443,18 +464,52 @@ function RegisterModal({
                 </div>
 
                 {selection.executorType === 'headed' && (
-                  <label className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 cursor-pointer">
+                  <label className={`flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 ${autoSubscribe ? 'opacity-50' : 'cursor-pointer'}`}>
                     <span>
                       <span className="block text-sm font-medium text-[var(--text-primary)]">脚本结束后保留浏览器</span>
-                      <span className="mt-1 block text-xs text-[var(--text-muted)]">用于调试可视化流程，任务结束后需要手动关闭浏览器窗口。</span>
+                      <span className="mt-1 block text-xs text-[var(--text-muted)]">{autoSubscribe ? '自动订阅会处理支付信息，开启后将强制关闭浏览器保留。' : '用于调试可视化流程，任务结束后需要手动关闭浏览器窗口。'}</span>
                     </span>
                     <input
                       type="checkbox"
                       checked={keepBrowserOpen}
+                      disabled={autoSubscribe}
                       onChange={e => setKeepBrowserOpen(e.target.checked)}
                       className="h-5 w-5 accent-[var(--accent)]"
                     />
                   </label>
+                )}
+
+                {platform === 'adobe' && (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-pane)]/45 px-4 py-3 space-y-3">
+                    <label className={`flex items-center justify-between gap-4 ${canAutoSubscribe ? 'cursor-pointer' : 'opacity-50'}`}>
+                      <span>
+                        <span className="block text-sm font-medium text-[var(--text-primary)]">注册后自动订阅 Firefly Pro</span>
+                        <span className="mt-1 block text-xs text-[var(--text-muted)]">使用所选虚拟卡完成 PRO 订阅；开启后不会保留浏览器 Profile。</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={autoSubscribe}
+                        disabled={!canAutoSubscribe}
+                        onChange={e => setAutoSubscribe(e.target.checked)}
+                        className="h-5 w-5 accent-[var(--accent)]"
+                      />
+                    </label>
+                    {autoSubscribe && (
+                      <div>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">虚拟卡</label>
+                        <select
+                          value={autoSubscribeCardId}
+                          onChange={e => setAutoSubscribeCardId(e.target.value ? Number(e.target.value) : '')}
+                          className="control-surface appearance-none w-full"
+                        >
+                          <option value="">请选择虚拟卡</option>
+                          {cardOptions.map(([v, l]: any) => <option key={v} value={v}>{l}</option>)}
+                        </select>
+                        {virtualCards.length === 0 && <p className="mt-2 text-xs text-amber-300">未找到虚拟卡，请先添加。</p>}
+                      </div>
+                    )}
+                    {!canAutoSubscribe && <p className="text-xs text-[var(--text-muted)]">自动订阅仅支持 Adobe 邮箱注册的浏览器执行模式。</p>}
+                  </div>
                 )}
 
                 <div className="grid grid-cols-2 gap-3">
@@ -494,7 +549,7 @@ function RegisterModal({
 
                 <Button
                   onClick={start}
-                  disabled={starting || !selection.identityProvider || !selection.executorType}
+                  disabled={starting || !selection.identityProvider || !selection.executorType || (autoSubscribe && !autoSubscribeCardId)}
                   className="w-full"
                 >
                   {starting ? '启动中...' : '开始自动注册'}

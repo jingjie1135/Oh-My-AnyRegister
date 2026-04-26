@@ -63,3 +63,59 @@ class TestAdobeSubscribeOtpCallback:
         subscribe_action = next(item for item in actions if item["id"] == "subscribe_pro_plus")
 
         assert any(param["key"] == "keep_browser_open" and param["type"] == "checkbox" for param in subscribe_action["params"])
+
+
+class TestAdobeAutoSubscribeConfig:
+    def test_maps_subscription_success_to_subscribed_status(self):
+        from platforms.adobe.plugin import AdobePlatform
+
+        platform = AdobePlatform(config=RegisterConfig(executor_type="headed"), mailbox=None)
+        result = platform._map_mailbox_result({
+            "email": "user@example.com",
+            "password": "Secret123!",
+            "token": "sid=1",
+            "extra": {"subscription": {"success": True}},
+        })
+
+        assert result.status.value == "subscribed"
+
+    def test_auto_subscribe_requires_card_id(self):
+        from platforms.adobe.plugin import AdobePlatform
+
+        platform = AdobePlatform(
+            config=RegisterConfig(executor_type="headed", extra={"auto_subscribe": True}),
+            mailbox=None,
+        )
+
+        try:
+            platform._load_auto_subscribe_card()
+        except RuntimeError as exc:
+            assert "card_id" in str(exc)
+        else:
+            raise AssertionError("Expected missing card_id to fail")
+
+    def test_auto_subscribe_string_true_is_enabled(self):
+        from platforms.adobe.plugin import AdobePlatform
+
+        platform = AdobePlatform(
+            config=RegisterConfig(executor_type="headed", extra={"auto_subscribe": "true"}),
+            mailbox=None,
+        )
+
+        assert platform._should_auto_subscribe() is True
+
+
+    def test_auto_subscribe_rejects_invalid_card_id(self):
+        from platforms.adobe.plugin import AdobePlatform
+
+        platform = AdobePlatform(
+            config=RegisterConfig(executor_type="headed", extra={"auto_subscribe": True, "card_id": "abc"}),
+            mailbox=None,
+        )
+
+        try:
+            platform._load_auto_subscribe_card()
+        except RuntimeError as exc:
+            assert "虚拟卡配置无效" in str(exc)
+        else:
+            raise AssertionError("Expected invalid card_id to fail")

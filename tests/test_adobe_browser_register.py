@@ -1,7 +1,9 @@
 """Unit tests for Adobe browser registration helpers."""
 from __future__ import annotations
 
-from platforms.adobe.browser_register import AdobeBrowserRegister
+import time
+
+from platforms.adobe.browser_register import AdobeBrowserRegister, _is_safe_cookie_export_url, build_adobe_cookie_header
 
 
 class TestAdobeBrowserRegisterOtpFill:
@@ -403,3 +405,74 @@ class TestAdobeBrowserRegisterKeepOpen:
 
         assert page.quit_called is True
         assert worker.page is None
+
+
+class TestAdobeBrowserRegisterCookies:
+    def test_build_adobe_cookie_header_matches_extension_scope(self):
+        cookies = [
+            {"domain": ".adobe.com", "path": "/", "name": "sid", "value": "root"},
+            {"domain": ".adobe.com", "path": "/firefly", "name": "sid", "value": "firefly"},
+            {"domain": "firefly.adobe.com", "path": "/", "name": "ff", "value": "1"},
+            {"domain": "account.adobe.com", "path": "/", "name": "acct", "value": "1"},
+            {"domain": "auth.services.adobe.com", "path": "/", "name": "auth", "value": "1"},
+            {"domain": "adobelogin.com", "path": "/", "name": "login", "value": "skip"},
+            {"domain": "example.com", "path": "/", "name": "other", "value": "skip"},
+            {"domain": ".adobe.com", "path": "/", "name": "sid", "value": "duplicate"},
+        ]
+
+        header = build_adobe_cookie_header(cookies)
+
+        assert header == "sid=root; sid=firefly; ff=1; acct=1; auth=1"
+
+    def test_wait_for_adobe_cookie_stability_waits_for_longer_persistent_cookie(self):
+        now = time.time()
+        first = [{"domain": ".adobe.com", "path": "/", "name": "ims_sid", "value": "short", "expires": now + 3600}]
+        second = [{"domain": ".adobe.com", "path": "/", "name": "ims_sid", "value": "long", "expires": now + 86400}]
+        calls = {"count": 0}
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+
+        def get_cookies():
+            calls["count"] += 1
+            return second
+
+        worker._get_browser_cookies = get_cookies
+
+        import platforms.adobe.browser_register as mod
+        original_sleep = mod.time.sleep
+        mod.time.sleep = lambda seconds: None
+        try:
+            assert worker._wait_for_adobe_cookie_stability(first) == second
+        finally:
+            mod.time.sleep = original_sleep
+        assert calls["count"] == 1
+
+    def test_wait_for_adobe_cookie_stability_ignores_short_lived_non_auth_cookie(self):
+        now = time.time()
+        cookies = [
+            {"domain": ".adobe.com", "path": "/", "name": "ims_sid", "value": "long", "expires": now + 86400},
+            {"domain": ".adobe.com", "path": "/", "name": "analytics", "value": "short", "expires": now + 3600},
+        ]
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker._get_browser_cookies = lambda: (_ for _ in ()).throw(AssertionError("should not wait"))
+
+        assert worker._wait_for_adobe_cookie_stability(cookies) == cookies
+
+    def test_wait_for_adobe_cookie_stability_returns_session_only_auth_cookie(self):
+        cookies = [{"domain": ".adobe.com", "path": "/", "name": "ims_sid", "value": "session", "expires": -1}]
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker._get_browser_cookies = lambda: (_ for _ in ()).throw(AssertionError("should not wait"))
+
+        assert worker._wait_for_adobe_cookie_stability(cookies) == cookies
+
+
+    def test_cookie_export_url_allows_local_and_private_targets(self):
+        assert _is_safe_cookie_export_url("http://localhost:6001/api") is True
+        assert _is_safe_cookie_export_url("http://127.0.0.1:6001/api") is True
+        assert _is_safe_cookie_export_url("http://192.168.1.20:6001/api") is True
+        assert _is_safe_cookie_export_url("http://10.0.0.5:6001/api") is True
+        assert _is_safe_cookie_export_url("http://172.16.0.5:6001/api") is True
+        assert _is_safe_cookie_export_url("http://adobe2api:6001/api") is True
+
+    def test_cookie_export_url_rejects_public_targets_by_default(self):
+        assert _is_safe_cookie_export_url("https://example.com/import-cookie") is False
+        assert _is_safe_cookie_export_url("ftp://localhost/import-cookie") is False

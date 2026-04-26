@@ -25,6 +25,8 @@ const DEFAULT_FORM: Record<string, any> = {
   chrome_user_data_dir: '',
   chrome_cdp_url: '',
   keep_browser_open: false,
+  auto_subscribe: false,
+  card_id: '',
   mail_provider: '',
   sms_provider: '',
 }
@@ -47,6 +49,7 @@ function getDefaultProviderKey(settings: ProviderSetting[] = []) {
 export default function Register() {
   const [form, setForm] = useState<Record<string, any>>(DEFAULT_FORM)
   const [platforms, setPlatforms] = useState<any[]>([])
+  const [virtualCards, setVirtualCards] = useState<any[]>([])
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
     captcha_providers: [],
@@ -89,8 +92,10 @@ export default function Register() {
       getConfig().catch(() => ({})),
       getPlatforms().catch(() => []),
       getConfigOptions().catch(() => null),
-    ]).then(([cfg, ps, options]) => {
+      apiFetch('/virtual-cards').catch(() => []),
+    ]).then(([cfg, ps, options, cards]) => {
       setPlatforms(ps || [])
+      setVirtualCards(Array.isArray(cards) ? cards : [])
       if (options) {
         setConfigOptions(options)
         setOptionsError('')
@@ -149,6 +154,10 @@ export default function Register() {
   const smsProviderOptions = getProviderSelectOptions(configOptions.sms_providers || [])
   const currentSmsProvider = (configOptions.sms_providers || []).find(provider => provider.value === form.sms_provider) || null
   const currentSmsSetting = getProviderSetting(configOptions.sms_settings || [], form.sms_provider)
+  const isAdobePlatform = form.platform === 'adobe'
+  const canAutoSubscribe = isAdobePlatform && ['headless', 'headed'].includes(form.executor_type) && form.identity_provider === 'mailbox'
+  const cardOptions = virtualCards.map((card: any) => [String(card.id), card.label || `虚拟卡 #${card.id}`])
+
   const allProviderFieldKeys = listProviderFieldKeys([
     ...(configOptions.mailbox_providers || []),
     ...(configOptions.captcha_providers || []),
@@ -161,6 +170,15 @@ export default function Register() {
       set('mail_provider', defaultProviderKey)
     }
   }, [form.identity_provider, form.mail_provider, configOptions.mailbox_settings])
+
+  useEffect(() => {
+    if (!canAutoSubscribe && form.auto_subscribe) {
+      setForm(current => ({ ...current, auto_subscribe: false, card_id: '' }))
+    }
+    if (form.auto_subscribe && form.keep_browser_open) {
+      set('keep_browser_open', false)
+    }
+  }, [canAutoSubscribe, form.auto_subscribe, form.keep_browser_open])
 
   useEffect(() => {
     if (!currentMailboxProvider) return
@@ -250,6 +268,10 @@ export default function Register() {
       chrome_user_data_dir: form.chrome_user_data_dir || undefined,
       chrome_cdp_url: form.chrome_cdp_url || undefined,
       keep_browser_open: form.executor_type === 'headed' ? Boolean(form.keep_browser_open) : false,
+    }
+    if (canAutoSubscribe && form.auto_subscribe) {
+      extra.auto_subscribe = true
+      extra.card_id = Number(form.card_id)
     }
     if (form.mail_provider) {
       extra.mail_provider = form.mail_provider
@@ -469,12 +491,46 @@ export default function Register() {
               {form.executor_type === 'headed' && (
                 <Toggle
                   label="脚本结束后保留浏览器"
-                  description="适合调试可视化流程。开启后任务结束时不会自动关闭浏览器窗口，需要手动关闭。"
+                  description={form.auto_subscribe ? "自动订阅会处理支付信息，开启后将强制关闭浏览器保留。" : "适合调试可视化流程。开启后任务结束时不会自动关闭浏览器窗口，需要手动关闭。"}
                   k="keep_browser_open"
+                  disabled={Boolean(form.auto_subscribe)}
                 />
               )}
             </CardContent>
           </Card>
+
+          {isAdobePlatform && (
+            <Card>
+              <CardHeader><CardTitle>Adobe Firefly Pro 自动订阅</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                <Toggle
+                  label="注册成功后自动登录并订阅 Firefly Pro"
+                  description="使用所选虚拟卡在同一浏览器会话中完成 PRO 订阅；出于安全考虑会关闭浏览器保留。"
+                  k="auto_subscribe"
+                  disabled={!canAutoSubscribe}
+                />
+                {form.auto_subscribe && (
+                  <div>
+                    <label className="block text-xs text-[var(--text-muted)] mb-1">虚拟卡</label>
+                    <select
+                      value={form.card_id}
+                      onChange={e => set('card_id', e.target.value)}
+                      className="control-surface appearance-none"
+                    >
+                      <option value="">请选择用于 Firefly Pro 订阅的虚拟卡</option>
+                      {cardOptions.map(([v, l]: any) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {virtualCards.length === 0 && (
+                      <p className="mt-2 text-xs text-amber-300">未找到虚拟卡，请先在订阅/虚拟卡管理中添加。</p>
+                    )}
+                  </div>
+                )}
+                {!canAutoSubscribe && (
+                  <p className="text-xs text-[var(--text-muted)]">自动订阅仅支持 Adobe 邮箱注册的浏览器执行模式。</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {form.identity_provider === 'mailbox' && (
             <Card>
@@ -543,7 +599,7 @@ export default function Register() {
                   <div className="mt-2 text-base font-medium text-[var(--text-primary)]">{summaryVerification}</div>
                 </div>
               </div>
-              <Button onClick={submit} disabled={polling} className="w-full">
+              <Button onClick={submit} disabled={polling || (canAutoSubscribe && form.auto_subscribe && !form.card_id)} className="w-full">
                 {polling ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />注册中...</> : <><Play className="mr-2 h-4 w-4" />开始注册</>}
               </Button>
             </CardContent>

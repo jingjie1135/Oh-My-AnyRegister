@@ -41,13 +41,18 @@ class AdobePlatform(BasePlatform):
     def _map_mailbox_result(self, result: dict) -> RegistrationResult:
         """映射注册结果"""
         pwd = result.get("password", "")
+        extra = result.get("extra", {}) or {}
+        subscription = extra.get("subscription") or {}
+        status = AccountStatus.REGISTERED
+        if subscription.get("success"):
+            status = AccountStatus.SUBSCRIBED
         return RegistrationResult(
             email=result["email"],
             password=pwd,
             # 将密码也塞进 Token 里，这样界面的“主凭证”就能直接复制密码
             token=result.get("token", "") or pwd,
-            status=AccountStatus.REGISTERED,
-            extra=result.get("extra", {})
+            status=status,
+            extra=extra
         )
 
     def _build_subscribe_otp_callback(self, account: Account):
@@ -76,21 +81,73 @@ class AdobePlatform(BasePlatform):
 
         return _otp_callback
 
+    def _should_auto_subscribe(self) -> bool:
+        value = (self.config.extra or {}).get("auto_subscribe")
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _load_auto_subscribe_card(self):
+        card_id = (self.config.extra or {}).get("card_id")
+        if not card_id:
+            raise RuntimeError("Adobe 自动订阅已开启，但未配置虚拟卡 card_id")
+        try:
+            normalized_card_id = int(card_id)
+        except (TypeError, ValueError):
+            raise RuntimeError("Adobe 自动订阅虚拟卡配置无效") from None
+
+        from core.virtual_card import get_virtual_card
+
+        card = get_virtual_card(normalized_card_id)
+        if not card:
+            raise RuntimeError("Adobe 自动订阅虚拟卡配置无效")
+        return card
+
     def build_browser_registration_adapter(self):
-        return BrowserRegistrationAdapter(
-            result_mapper=lambda ctx, result: self._map_mailbox_result(result),
-            browser_worker_builder=lambda ctx, artifacts: __import__("platforms.adobe.browser_register", fromlist=["AdobeBrowserRegister"]).AdobeBrowserRegister(
+        auto_subscribe_card = None
+
+        def _build_worker(ctx, artifacts):
+            nonlocal auto_subscribe_card
+            if self._should_auto_subscribe():
+                auto_subscribe_card = self._load_auto_subscribe_card()
+                from platforms.adobe.browser_register_subscribe import AdobeBrowserRegisterSubscribe
+
+                return AdobeBrowserRegisterSubscribe(
+                    captcha=artifacts.captcha_solver,
+                    headless=(ctx.executor_type == "headless"),
+                    keep_browser_open=ctx.config.keep_browser_open,
+                    proxy=ctx.proxy,
+                    otp_callback=artifacts.otp_callback,
+                    log_fn=ctx.log,
+                    card=auto_subscribe_card,
+                )
+
+            from platforms.adobe.browser_register import AdobeBrowserRegister
+            return AdobeBrowserRegister(
                 captcha=artifacts.captcha_solver,
                 headless=(ctx.executor_type == "headless"),
                 keep_browser_open=ctx.config.keep_browser_open,
                 proxy=ctx.proxy,
                 otp_callback=artifacts.otp_callback,
                 log_fn=ctx.log,
-            ),
-            browser_register_runner=lambda worker, ctx, artifacts: worker.run(
+            )
+
+        def _run_worker(worker, ctx, artifacts):
+            if self._should_auto_subscribe():
+                return worker.run(
+                    email=ctx.identity.email,
+                    password=ctx.password or "",
+                    card=auto_subscribe_card,
+                )
+            return worker.run(
                 email=ctx.identity.email,
                 password=ctx.password or "",
-            ),
+            )
+
+        return BrowserRegistrationAdapter(
+            result_mapper=lambda ctx, result: self._map_mailbox_result(result),
+            browser_worker_builder=_build_worker,
+            browser_register_runner=_run_worker,
             capability=RegistrationCapability(oauth_headless_requires_browser_reuse=False),
             # 指定验证码页面出现时的识别特征
             otp_spec=OtpSpec(wait_message="等待 Adobe 邮箱验证码...", success_label="验证码"),
@@ -124,10 +181,14 @@ class AdobePlatform(BasePlatform):
             card_id = params.get("card_id")
             if not card_id:
                 return {"ok": False, "data": {"message": "请提供虚拟卡 ID"}}
+            try:
+                normalized_card_id = int(card_id)
+            except (TypeError, ValueError):
+                return {"ok": False, "data": {"message": "虚拟卡配置无效"}}
             from core.virtual_card import get_virtual_card
-            card = get_virtual_card(int(card_id))
+            card = get_virtual_card(normalized_card_id)
             if not card:
-                return {"ok": False, "data": {"message": "虚拟卡不存在"}}
+                return {"ok": False, "data": {"message": "虚拟卡配置无效"}}
             from platforms.adobe.browser_subscribe import AdobeBrowserSubscribe
             worker = AdobeBrowserSubscribe(
                 headless=False,
