@@ -279,6 +279,32 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             if isinstance(host, dict):
                 self._debug(f"shadow host 诊断: {host}")
 
+    def _click_auth_light_link_via_shadow_host(self, script: str, label: str) -> bool:
+        host_selectors = ['#sentry', 'tag:susi-sentry', 'susi-sentry']
+        for selector in host_selectors:
+            try:
+                host = self.page.ele(selector, timeout=1)
+                if not host:
+                    continue
+                shadow = getattr(host, 'sr', None) or getattr(host, 'shadow_root', None)
+                if not shadow:
+                    continue
+                iframe = shadow.ele('iframe', timeout=1)
+                if not iframe:
+                    continue
+                frame = self.page.get_frame(iframe)
+                if not frame:
+                    continue
+                result = frame.run_js(script)
+                self._debug(f"Firefly auth-light shadow-host 点击结果 ({selector}): {result}")
+                if isinstance(result, dict) and result.get("ok"):
+                    self.log(f"✅ 点击成功: Firefly auth-light 链接 ({label})")
+                    self._delay(0.5, 1)
+                    return True
+            except Exception as exc:
+                self._debug(f"Firefly auth-light shadow-host 点击失败 ({selector}): {exc}")
+        return False
+
     def _click_auth_light_link(self, script: str, label: str, timeout: float = 8) -> bool:
         start = time.time()
         seen_auth_light = False
@@ -324,6 +350,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                             return True
                     except Exception as exc:
                         self._debug(f"Firefly auth-light DOM 发现 iframe 点击失败: {exc}")
+            if self._click_auth_light_link_via_shadow_host(script, label):
+                return True
             time.sleep(0.5)
         if not seen_auth_light:
             self._log_auth_light_snapshot(self._auth_light_dom_snapshot())

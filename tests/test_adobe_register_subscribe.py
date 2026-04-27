@@ -439,6 +439,61 @@ class TestAdobeRegisterSubscribeLogin:
         assert worker._click_auth_light_create_account_link(timeout=1) is True
         assert "sp-link#create-account" in worker.page.frame.clicked_js
 
+    def test_auth_light_click_uses_shadow_host_iframe_element(self):
+        class FakeFrame:
+            def __init__(self):
+                self.clicked_js = ""
+
+            def run_js(self, script):
+                self.clicked_js = script
+                if "sp-link#create-account" in script:
+                    return {"ok": True, "target": "auth-light-create-account"}
+                return {"ok": False}
+
+        class FakeShadowRoot:
+            def __init__(self, iframe):
+                self.iframe = iframe
+
+            def ele(self, selector, timeout=1):
+                if selector == 'iframe':
+                    return self.iframe
+                return None
+
+        class FakeHost:
+            def __init__(self, iframe):
+                self.shadow_root = FakeShadowRoot(iframe)
+                self.sr = self.shadow_root
+
+        class FakePage:
+            def __init__(self):
+                self.frame = FakeFrame()
+                self.iframe = object()
+
+            def eles(self, selector, timeout=1):
+                return []
+
+            def run_js(self, script):
+                if "authLightFrames" in script:
+                    return {"authLightFrames": [], "dialogs": []}
+                return None
+
+            def ele(self, selector, timeout=1):
+                if selector in {'#sentry', 'tag:susi-sentry', 'susi-sentry'}:
+                    return FakeHost(self.iframe)
+                return None
+
+            def get_frame(self, target):
+                if target is self.iframe:
+                    return self.frame
+                return None
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._click_auth_light_create_account_link(timeout=1) is True
+        assert "sp-link#create-account" in worker.page.frame.clicked_js
+
     def test_login_entry_prefers_verified_firefly_header_sign_in_selector(self):
         clicked_selectors = []
 
