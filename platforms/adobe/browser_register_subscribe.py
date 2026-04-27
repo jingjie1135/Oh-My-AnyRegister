@@ -280,20 +280,34 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                 self._debug(f"shadow host 诊断: {host}")
 
     def _click_auth_light_link_via_shadow_host(self, script: str, label: str) -> bool:
-        host_selectors = ['#sentry', 'tag:susi-sentry', 'susi-sentry']
+        host_selectors = ['tag:susi-sentry#sentry', '#sentry', 'tag:susi-sentry', 'susi-sentry']
         for selector in host_selectors:
             try:
+                self._debug(f"尝试定位 Firefly auth-light shadow host: {selector}")
                 host = self.page.ele(selector, timeout=1)
                 if not host:
+                    self._debug(f"Firefly auth-light shadow host 未找到: {selector}")
                     continue
                 shadow = getattr(host, 'sr', None) or getattr(host, 'shadow_root', None)
                 if not shadow:
+                    self._debug(f"Firefly auth-light shadow root 不可用: {selector}")
                     continue
-                iframe = shadow.ele('iframe', timeout=1)
-                if not iframe:
-                    continue
-                frame = self.page.get_frame(iframe)
+                frame = None
+                get_frame = getattr(shadow, 'get_frame', None)
+                if callable(get_frame):
+                    try:
+                        frame = get_frame('t:iframe')
+                        self._debug(f"Firefly auth-light shadow.get_frame 结果 ({selector}): {bool(frame)}")
+                    except Exception as exc:
+                        self._debug(f"Firefly auth-light shadow.get_frame 失败 ({selector}): {exc}")
                 if not frame:
+                    iframe = shadow.ele('iframe', timeout=1)
+                    if not iframe:
+                        self._debug(f"Firefly auth-light shadow iframe 未找到: {selector}")
+                        continue
+                    frame = self.page.get_frame(iframe)
+                if not frame:
+                    self._debug(f"Firefly auth-light iframe frame 不可用: {selector}")
                     continue
                 result = frame.run_js(script)
                 self._debug(f"Firefly auth-light shadow-host 点击结果 ({selector}): {result}")
@@ -336,26 +350,14 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
             auth_light_frames = snapshot.get("authLightFrames") or [] if isinstance(snapshot, dict) else []
             if auth_light_frames:
                 seen_auth_light = True
-                for frame_info in auth_light_frames:
-                    try:
-                        frame_index = frame_info.get("index") if isinstance(frame_info, dict) else None
-                        frame = self.page.get_frame(frame_index)
-                        if not frame:
-                            continue
-                        result = frame.run_js(script)
-                        self._debug(f"Firefly auth-light DOM 发现点击结果 frame[{frame_index}]: {result}")
-                        if isinstance(result, dict) and result.get("ok"):
-                            self.log(f"✅ 点击成功: Firefly auth-light 链接 ({label})")
-                            self._delay(0.5, 1)
-                            return True
-                    except Exception as exc:
-                        self._debug(f"Firefly auth-light DOM 发现 iframe 点击失败: {exc}")
             if self._click_auth_light_link_via_shadow_host(script, label):
                 return True
             time.sleep(0.5)
+        self._log_auth_light_snapshot(self._auth_light_dom_snapshot())
         if not seen_auth_light:
-            self._log_auth_light_snapshot(self._auth_light_dom_snapshot())
             self.log(f"⚠️ 未检测到 Firefly auth-light iframe，无法点击 {label}")
+        else:
+            self.log(f"⚠️ 已检测到 Firefly auth-light iframe，但无法点击 {label}")
         return False
 
     def _confirm_firefly_login_modal(self, before_tab_ids: set) -> bool:

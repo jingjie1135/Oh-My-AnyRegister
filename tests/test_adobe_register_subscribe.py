@@ -399,20 +399,10 @@ class TestAdobeRegisterSubscribeLogin:
         assert main_page.frame.clicked_js
         assert worker.page is browser.login_tab
 
-    def test_auth_light_click_uses_dom_diagnostic_when_top_level_iframe_list_is_empty(self):
-        class FakeFrame:
-            def __init__(self):
-                self.clicked_js = ""
-
-            def run_js(self, script):
-                self.clicked_js = script
-                if "sp-link#create-account" in script:
-                    return {"ok": True, "target": "auth-light-create-account"}
-                return {"ok": False}
-
+    def test_auth_light_click_does_not_use_dom_diagnostic_index_as_frame_handle(self):
         class FakePage:
             def __init__(self):
-                self.frame = FakeFrame()
+                self.get_frame_targets = []
 
             def eles(self, selector, timeout=1):
                 return []
@@ -428,16 +418,15 @@ class TestAdobeRegisterSubscribeLogin:
                 return None
 
             def get_frame(self, target):
-                if target == 0:
-                    return self.frame
+                self.get_frame_targets.append(target)
                 return None
 
         worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
         worker.page = FakePage()
         worker._delay = lambda lo=0.5, hi=1.5: None
 
-        assert worker._click_auth_light_create_account_link(timeout=1) is True
-        assert "sp-link#create-account" in worker.page.frame.clicked_js
+        assert worker._click_auth_light_create_account_link(timeout=0.1) is False
+        assert worker.page.get_frame_targets == []
 
     def test_auth_light_click_uses_shadow_host_iframe_element(self):
         class FakeFrame:
@@ -493,6 +482,165 @@ class TestAdobeRegisterSubscribeLogin:
 
         assert worker._click_auth_light_create_account_link(timeout=1) is True
         assert "sp-link#create-account" in worker.page.frame.clicked_js
+
+    def test_auth_light_click_prefers_shadow_root_get_frame_for_shadow_iframe(self):
+        class FakeFrame:
+            def __init__(self):
+                self.clicked_js = ""
+
+            def run_js(self, script):
+                self.clicked_js = script
+                if "sp-link#create-account" in script:
+                    return {"ok": True, "target": "auth-light-create-account"}
+                return {"ok": False}
+
+        class FakeShadowRoot:
+            def __init__(self, frame):
+                self.frame = frame
+                self.get_frame_selectors = []
+
+            def get_frame(self, selector):
+                self.get_frame_selectors.append(selector)
+                if selector == 't:iframe':
+                    return self.frame
+                return None
+
+            def ele(self, selector, timeout=1):
+                raise AssertionError("shadow.ele() should not be needed when shadow.get_frame() works")
+
+        class FakeHost:
+            def __init__(self, frame):
+                self.shadow_root = FakeShadowRoot(frame)
+                self.sr = self.shadow_root
+
+        class FakePage:
+            def __init__(self):
+                self.frame = FakeFrame()
+                self.host = FakeHost(self.frame)
+
+            def eles(self, selector, timeout=1):
+                return []
+
+            def run_js(self, script):
+                if "authLightFrames" in script:
+                    return {"authLightFrames": [], "dialogs": []}
+                return None
+
+            def ele(self, selector, timeout=1):
+                if selector in {'tag:susi-sentry#sentry', '#sentry', 'tag:susi-sentry', 'susi-sentry'}:
+                    return self.host
+                return None
+
+            def get_frame(self, target):
+                raise AssertionError("page.get_frame() should not be needed when shadow.get_frame() works")
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._click_auth_light_create_account_link(timeout=1) is True
+        assert worker.page.host.sr.get_frame_selectors == ['t:iframe']
+        assert "sp-link#create-account" in worker.page.frame.clicked_js
+
+    def test_auth_light_click_falls_back_to_shadow_host_when_snapshot_index_is_not_frame_handle(self):
+        class FakeFrame:
+            def __init__(self):
+                self.clicked_js = ""
+
+            def run_js(self, script):
+                self.clicked_js = script
+                if "sp-link#create-account" in script:
+                    return {"ok": True, "target": "auth-light-create-account"}
+                return {"ok": False}
+
+        class FakeShadowRoot:
+            def __init__(self, iframe):
+                self.iframe = iframe
+
+            def ele(self, selector, timeout=1):
+                if selector == 'iframe':
+                    return self.iframe
+                return None
+
+        class FakeHost:
+            def __init__(self, iframe):
+                self.shadow_root = FakeShadowRoot(iframe)
+                self.sr = self.shadow_root
+
+        class FakePage:
+            def __init__(self):
+                self.frame = FakeFrame()
+                self.shadow_iframe = object()
+                self.get_frame_targets = []
+
+            def eles(self, selector, timeout=1):
+                return []
+
+            def run_js(self, script):
+                if "authLightFrames" in script:
+                    return {
+                        "authLightFrames": [
+                            {"index": 0, "src": "https://auth-light.identity.adobe.com/#large-buttons", "title": ""}
+                        ],
+                        "dialogs": [],
+                    }
+                return None
+
+            def ele(self, selector, timeout=1):
+                if selector in {'#sentry', 'tag:susi-sentry', 'susi-sentry'}:
+                    return FakeHost(self.shadow_iframe)
+                return None
+
+            def get_frame(self, target):
+                self.get_frame_targets.append(target)
+                if target is self.shadow_iframe:
+                    return self.frame
+                return None
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._click_auth_light_create_account_link(timeout=1) is True
+        assert 0 not in worker.page.get_frame_targets
+        assert worker.page.shadow_iframe in worker.page.get_frame_targets
+        assert "sp-link#create-account" in worker.page.frame.clicked_js
+
+    def test_auth_light_click_logs_snapshot_when_iframe_seen_but_click_fails(self):
+        messages = []
+
+        class FakePage:
+            def eles(self, selector, timeout=1):
+                return []
+
+            def run_js(self, script):
+                if "authLightFrames" in script:
+                    return {
+                        "authLightFrames": [
+                            {"index": 0, "src": "https://auth-light.identity.adobe.com/#large-buttons", "title": ""}
+                        ],
+                        "frames": [
+                            {"index": 0, "visible": True, "src": "https://auth-light.identity.adobe.com/#large-buttons", "title": "", "testid": "", "path": "document/susi-sentry#sentry::shadow"}
+                        ],
+                        "dialogs": [],
+                        "shadowHosts": [{"tag": "susi-sentry", "path": "document", "id": "sentry", "testid": ""}],
+                        "url": "https://firefly.adobe.com/",
+                    }
+                return None
+
+            def ele(self, selector, timeout=1):
+                return None
+
+            def get_frame(self, target):
+                return None
+
+        worker = AdobeBrowserRegisterSubscribe(log_fn=messages.append)
+        worker.page = FakePage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._click_auth_light_create_account_link(timeout=0.1) is False
+        assert any("auth-light 诊断 URL" in message for message in messages)
+        assert any("iframe 诊断" in message for message in messages)
 
     def test_login_entry_prefers_verified_firefly_header_sign_in_selector(self):
         clicked_selectors = []

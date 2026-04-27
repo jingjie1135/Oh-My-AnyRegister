@@ -309,6 +309,138 @@ class TestAdobeBrowserRegisterStep1:
         assert enabled.clicked is True
 
 
+class TestAdobeBrowserRegisterProfile:
+    def test_safe_type_dispatches_input_change_and_blur_events_after_typing(self):
+        class FakeElement:
+            def __init__(self):
+                self.value = ""
+                self.events_script = ""
+
+            def click(self):
+                return None
+
+            def input(self, value):
+                if len(str(value)) == 1 and str(value).isdigit():
+                    self.value += str(value)
+
+            def run_js(self, script):
+                self.events_script = script
+                return None
+
+        element = FakeElement()
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+
+        assert worker._safe_type(element, "1990") is True
+        assert element.value == "1990"
+        assert "input" in element.events_script
+        assert "change" in element.events_script
+        assert "blur" in element.events_script
+
+    def test_select_signup_birth_month_supports_english_option_and_confirms_label_changed(self):
+        class FakeStates:
+            is_displayed = True
+
+        class FakeMonthField:
+            states = FakeStates()
+
+            def __init__(self):
+                self.text = "Select..."
+                self.clicked = False
+
+            def attr(self, name):
+                if name == "value":
+                    return ""
+                return ""
+
+            def click(self):
+                self.clicked = True
+
+            @property
+            def select(self):
+                raise RuntimeError("custom Adobe month control is not a native select")
+
+        class FakeOption:
+            states = FakeStates()
+
+            def __init__(self, text, month_field):
+                self.text = text
+                self.month_field = month_field
+                self.clicked = False
+
+            def click(self):
+                self.clicked = True
+                self.month_field.text = self.text
+
+        month_field = FakeMonthField()
+        january = FakeOption("January", month_field)
+
+        class FakePage:
+            def ele(self, selector, timeout=3):
+                if selector == '#Signup-DateOfBirthChooser-Month':
+                    return month_field
+                return None
+
+            def eles(self, selector, timeout=1):
+                if selector == '[role="option"]':
+                    return [january]
+                return []
+
+        worker = AdobeBrowserRegister(log_fn=lambda message: None)
+        worker.page = FakePage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        assert worker._select_signup_birth_month(1) is True
+        assert january.clicked is True
+        assert month_field.text == "January"
+
+
+class TestAdobeBrowserRegisterPopupRecovery:
+    def test_wait_registration_closure_switches_to_firefly_tab_when_signup_popup_disconnects(self):
+        class DisconnectedSignupPage:
+            @property
+            def url(self):
+                raise RuntimeError("与页面的连接已断开。 版本: 4.1.1.2")
+
+            @property
+            def tab_ids(self):
+                return ["signup", "firefly"]
+
+            def get_tab(self, tab_id=None):
+                if tab_id == "firefly":
+                    return firefly_page
+                return self
+
+        class FakeSet:
+            def __init__(self):
+                self.activated = False
+
+            def activate(self):
+                self.activated = True
+
+        class FireflyPage:
+            url = "https://firefly.adobe.com/"
+
+            def __init__(self):
+                self.set = FakeSet()
+
+            def run_js(self, script):
+                if "document.readyState" in script:
+                    return "complete"
+                return None
+
+        firefly_page = FireflyPage()
+        messages = []
+        worker = AdobeBrowserRegister(log_fn=messages.append)
+        worker.page = DisconnectedSignupPage()
+        worker._delay = lambda lo=0.5, hi=1.5: None
+
+        worker._wait_registration_closure()
+
+        assert worker.page is firefly_page
+        assert firefly_page.set.activated is True
+        assert any("已切回 Firefly 父页面" in message for message in messages)
+
+
 class TestAdobeBrowserRegisterFailureGuards:
     def test_missing_otp_callback_raises_on_verify_page(self):
         class FakeStates:

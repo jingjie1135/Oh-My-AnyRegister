@@ -297,6 +297,17 @@ class AdobeBrowserRegister:
                 if random.random() < 0.08:
                     delay += random.uniform(0.2, 0.5)
                 time.sleep(delay)
+            try:
+                target.run_js(
+                    """
+                    this.dispatchEvent(new Event('input', { bubbles: true }));
+                    this.dispatchEvent(new Event('change', { bubbles: true }));
+                    this.blur && this.blur();
+                    this.dispatchEvent(new Event('blur', { bubbles: true }));
+                    """
+                )
+            except Exception as e:
+                self.log(f"  [debug] 输入事件派发失败: {e}")
             time.sleep(random.uniform(0.2, 0.5))
             return True
         return False
@@ -554,33 +565,53 @@ class AdobeBrowserRegister:
             raise Exception(f"Step1 继续后未进入资料页或验证码页，当前 URL: {self.page.url}")
         return "email_verify" if self._is_email_verify_page() else "profile"
 
-    def _select_signup_birth_month(self, month: int) -> None:
+    def _select_signup_birth_month(self, month: int) -> bool:
         month_field = self.page.ele('#Signup-DateOfBirthChooser-Month', timeout=3) or self.page.ele('[data-id="DateOfBirthChooser-Month"]', timeout=3)
         if not month_field:
             month_field = self.page.ele('select[name="month"]', timeout=3)
         if not month_field:
-            return
+            return False
         try:
             month_field.select.by_value(str(month))
-            return
+            return True
         except Exception:
             pass
         month_field.click()
         self._delay()
-        month_names = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
-        target = month_names[month]
+        month_names_zh = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
+        month_names_en = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+        month_abbr_en = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        targets = [month_names_zh[month], month_names_en[month], month_abbr_en[month], f"{month}月", str(month)]
+
+        def _month_committed() -> bool:
+            try:
+                value = str(month_field.attr('value') or "").strip()
+                if value and value.lower() not in {"select", "select..."}:
+                    return True
+            except Exception:
+                pass
+            try:
+                label = str(getattr(month_field, 'text', '') or "").strip()
+                if label and "select" not in label.lower() and "选择" not in label and label != "...":
+                    return True
+            except Exception:
+                pass
+            return False
+
         start = time.time()
         while time.time() - start < 5:
             try:
                 for option in self.page.eles('[role="option"]', timeout=1) or []:
-                    if option.states.is_displayed and target in str(option.text or ""):
+                    option_text = str(option.text or "")
+                    if option.states.is_displayed and any(target and target in option_text for target in targets):
                         option.click()
                         self._delay(0.2, 0.4)
-                        return
+                        return _month_committed()
             except Exception:
                 pass
-            if self._find_and_click([target], timeout=1):
-                return
+            if self._find_and_click([target for target in targets if target], timeout=1):
+                return _month_committed()
+        return False
 
     def _fill_signup_profile(self) -> None:
         prof = self._registration_profile
@@ -597,10 +628,11 @@ class AdobeBrowserRegister:
         ln_field = self.page.ele('#Signup-LastNameField', timeout=3) or self.page.ele('input[name="lastName"]', timeout=3)
         if not self._safe_type(ln_field, prof["ln"]):
             raise Exception("Last name 输入失败")
-        self._select_signup_birth_month(int(prof["month"]))
+        if not self._select_signup_birth_month(int(prof["month"])):
+            raise Exception("Month 选择失败")
         self._delay(0.5)
         year_field = self.page.ele('#Signup-DateOfBirthChooser-Year', timeout=3) or self.page.ele('input[name="year"]', timeout=3)
-        if not self._safe_type(year_field, str(prof["year"])):
+        if not self._safe_type_and_confirm(year_field, str(prof["year"]), "出生年份"):
             raise Exception("Year 输入失败")
         self._delay(0.5, 1)
 
@@ -687,6 +719,39 @@ class AdobeBrowserRegister:
 
         self.log(f"⚠️ 提交注册后 {timeout}s 内未检测到 Arkose 通过后的邮箱验证码页，当前 URL: {self._current_browser_location()}")
         return "timeout"
+
+    def _switch_to_existing_firefly_tab(self) -> bool:
+        """Switch from a closed signup popup back to the existing Firefly parent tab."""
+        controller = self.page
+        try:
+            tab_ids = list(getattr(controller, 'tab_ids', []) or [])
+        except Exception as exc:
+            self.log(f"  [debug] 读取标签页列表失败，无法切回 Firefly 父页面: {exc}")
+            return False
+
+        for tab_id in reversed(tab_ids):
+            try:
+                tab = controller.get_tab(tab_id)
+            except Exception as exc:
+                self.log(f"  [debug] 读取标签页失败({tab_id}): {exc}")
+                continue
+            if not tab or tab is self.page:
+                continue
+            try:
+                tab_url = tab.url or ""
+            except Exception as exc:
+                self.log(f"  [debug] 标签页 URL 不可读({tab_id}): {exc}")
+                continue
+            if not tab_url.startswith("https://firefly.adobe.com"):
+                continue
+            self.page = tab
+            try:
+                self.page.set.activate()
+            except Exception:
+                pass
+            self.log(f"[Adobe] ✅ 已切回 Firefly 父页面: {tab_url}")
+            return True
+        return False
 
     def init_browser(self):
         """初始化带有 Stealth 补丁的浏览器"""
@@ -870,7 +935,13 @@ class AdobeBrowserRegister:
             # 等待最长 60 秒让 Adobe 走完它所有的页面，期间遇到任何可以继续的按钮就点
             wait_time = 0
             while wait_time < 60:
-                cur_url = self.page.url or ""
+                try:
+                    cur_url = self.page.url or ""
+                except Exception as exc:
+                    self.log(f"⚠️ 注册窗口连接已断开，尝试切回 Firefly 父页面: {exc}")
+                    if self._switch_to_existing_firefly_tab():
+                        break
+                    raise
 
                 if cur_url.startswith("https://firefly.adobe.com"):
                     self.log("[Adobe] ✅ 原生跳转抵达 Firefly 主页！")
