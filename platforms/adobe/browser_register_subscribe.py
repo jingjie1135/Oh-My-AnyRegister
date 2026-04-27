@@ -210,6 +210,75 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         """
         return self._click_auth_light_link(click_create_account_js, "auth-light-create-account", timeout)
 
+    def _auth_light_dom_snapshot(self):
+        script = """
+        return (function() {
+            const seen = new Set();
+            const frames = [];
+            const dialogs = [];
+            const hosts = [];
+            const visit = (root, path) => {
+                if (!root || seen.has(root)) return;
+                seen.add(root);
+                let nodes = [];
+                try { nodes = Array.from(root.querySelectorAll('*')); } catch (e) { return; }
+                for (const node of nodes) {
+                    const tag = (node.tagName || '').toLowerCase();
+                    const id = node.id || '';
+                    const testid = node.getAttribute?.('data-testid') || node.getAttribute?.('data-test-id') || '';
+                    const title = node.getAttribute?.('title') || '';
+                    const src = node.getAttribute?.('src') || '';
+                    const role = node.getAttribute?.('role') || '';
+                    const label = node.getAttribute?.('aria-label') || '';
+                    if (tag === 'iframe') {
+                        frames.push({ index: frames.length, path, src, title, id, testid, visible: !!(node.offsetWidth || node.offsetHeight || node.getClientRects().length) });
+                    }
+                    if (tag.includes('dialog') || role === 'dialog' || testid.includes('dialog') || id.includes('dialog')) {
+                        dialogs.push({ tag, path, id, testid, title, role, label });
+                    }
+                    if (node.shadowRoot) {
+                        hosts.push({ tag, path, id, testid });
+                        visit(node.shadowRoot, `${path}/${tag}${id ? '#' + id : ''}::shadow`);
+                    }
+                }
+            };
+            visit(document, 'document');
+            return {
+                authLightFrames: frames.filter((frame) => (frame.src || '').includes('auth-light.identity.adobe.com')),
+                frames: frames.slice(0, 20),
+                dialogs: dialogs.slice(0, 20),
+                shadowHosts: hosts.slice(0, 20),
+                url: location.href,
+            };
+        })();
+        """
+        try:
+            result = self.page.run_js(script)
+            return result if isinstance(result, dict) else {}
+        except Exception as exc:
+            self._debug(f"Firefly auth-light DOM 诊断失败: {exc}")
+            return {}
+
+    def _log_auth_light_snapshot(self, snapshot) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        self._debug(f"auth-light 诊断 URL: {snapshot.get('url', '')}")
+        for frame in (snapshot.get("frames") or [])[:8]:
+            if not isinstance(frame, dict):
+                continue
+            self._debug(
+                "iframe 诊断: "
+                f"idx={frame.get('index')} visible={frame.get('visible')} "
+                f"src={str(frame.get('src') or '')[:120]} "
+                f"title={frame.get('title', '')} testid={frame.get('testid', '')} path={frame.get('path', '')}"
+            )
+        for dialog in (snapshot.get("dialogs") or [])[:5]:
+            if isinstance(dialog, dict):
+                self._debug(f"dialog 诊断: {dialog}")
+        for host in (snapshot.get("shadowHosts") or [])[:5]:
+            if isinstance(host, dict):
+                self._debug(f"shadow host 诊断: {host}")
+
     def _click_auth_light_link(self, script: str, label: str, timeout: float = 8) -> bool:
         start = time.time()
         seen_auth_light = False
@@ -237,8 +306,27 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
                         return True
                 except Exception as exc:
                     self._debug(f"Firefly auth-light iframe[{index}] 点击失败: {exc}")
+            snapshot = self._auth_light_dom_snapshot()
+            auth_light_frames = snapshot.get("authLightFrames") or [] if isinstance(snapshot, dict) else []
+            if auth_light_frames:
+                seen_auth_light = True
+                for frame_info in auth_light_frames:
+                    try:
+                        frame_index = frame_info.get("index") if isinstance(frame_info, dict) else None
+                        frame = self.page.get_frame(frame_index)
+                        if not frame:
+                            continue
+                        result = frame.run_js(script)
+                        self._debug(f"Firefly auth-light DOM 发现点击结果 frame[{frame_index}]: {result}")
+                        if isinstance(result, dict) and result.get("ok"):
+                            self.log(f"✅ 点击成功: Firefly auth-light 链接 ({label})")
+                            self._delay(0.5, 1)
+                            return True
+                    except Exception as exc:
+                        self._debug(f"Firefly auth-light DOM 发现 iframe 点击失败: {exc}")
             time.sleep(0.5)
         if not seen_auth_light:
+            self._log_auth_light_snapshot(self._auth_light_dom_snapshot())
             self.log(f"⚠️ 未检测到 Firefly auth-light iframe，无法点击 {label}")
         return False
 
