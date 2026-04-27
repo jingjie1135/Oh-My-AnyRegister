@@ -768,6 +768,7 @@ class TestAdobeRegisterSubscribeLogin:
 
         assert main_page.visited == ["https://firefly.adobe.com/"]
         assert main_page.frame.clicked_js
+        assert worker._firefly_parent_page is main_page
         assert worker.page is browser.signup_tab
         assert worker.page.url == "https://auth.services.adobe.com/signup/new-window"
 
