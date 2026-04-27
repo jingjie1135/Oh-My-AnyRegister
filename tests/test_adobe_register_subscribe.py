@@ -286,7 +286,7 @@ class TestAdobeRegisterSubscribeLogin:
                 self.url = url
 
             def ele(self, selector, timeout=0.5):
-                if selector == '[data-test-id="unav-profile--sign-in"]':
+                if selector == 'text:Sign in':
                     return FakeElement(lambda: setattr(self, "modal_open", True))
                 return None
 
@@ -478,7 +478,7 @@ class TestAdobeRegisterSubscribeLogin:
                 self.url = url
 
             def ele(self, selector, timeout=0.5):
-                if selector == '[data-test-id="unav-profile--sign-in"]':
+                if selector == 'text:Sign in':
                     return FakeElement(lambda: setattr(self, "modal_open", True))
                 return None
 
@@ -549,58 +549,6 @@ class TestAdobeRegisterSubscribeLogin:
 
         assert clicked_selectors[0] == '[data-test-id="unav-profile--sign-in"]'
         assert '[data-testid="unav-profile--sign-in"]' in clicked_selectors
-
-    def test_create_account_entry_does_not_click_generic_sign_in_when_header_entry_is_absent(self):
-        class FakeStates:
-            is_displayed = True
-
-        class FakeElement:
-            states = FakeStates()
-
-            def __init__(self, page, selector):
-                self.page = page
-                self.selector = selector
-
-            class scroll:
-                @staticmethod
-                def to_see():
-                    return None
-
-            def click(self, by_js=False):
-                self.page.clicked.append(self.selector)
-                if self.selector == '[data-test-id="unav-profile--sign-in"]':
-                    self.page.auth_light_open = True
-
-        class FakePage:
-            def __init__(self):
-                self.clicked = []
-                self.auth_light_open = False
-
-            def get(self, url):
-                return None
-
-            def ele(self, selector, timeout=0.5):
-                if selector == 'tag:button@@text():Sign in' and not self.clicked:
-                    return FakeElement(self, selector)
-                return None
-
-            def eles(self, selector, timeout=1):
-                return []
-
-        page = FakePage()
-        worker = AdobeBrowserRegisterSubscribe(log_fn=lambda message: None)
-        worker.page = page
-        worker._wait_page_ready = lambda timeout=20: True
-        worker._delay = lambda lo=0.5, hi=1.5: None
-        worker._current_tab_ids = lambda: []
-        worker._switch_to_new_tab_after_click = lambda before_tab_ids, timeout=12: True
-        worker._click_auth_light_create_account_link = lambda timeout=30: page.auth_light_open
-
-        import pytest
-        with pytest.raises(Exception, match="无法找到 Firefly 注册入口"):
-            worker._open_firefly_create_account_entry()
-
-        assert page.clicked == []
 
     def test_register_account_does_not_navigate_to_static_signup_after_firefly_entry(self):
         class FakePage:
