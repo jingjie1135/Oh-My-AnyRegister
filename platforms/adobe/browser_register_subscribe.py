@@ -122,6 +122,8 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         return None
 
     def _tab_controller(self):
+        if getattr(self, "_browser_controller", None):
+            return self._browser_controller
         if hasattr(self.page, "get_tab") or hasattr(self.page, "tab_ids"):
             return self.page
         try:
@@ -410,6 +412,7 @@ class AdobeBrowserRegisterSubscribe(AdobeBrowserRegister):
         self.page.get("https://firefly.adobe.com/")
         self._wait_page_ready(20)
         self._delay(2, 3)
+        self._firefly_parent_page = self.page
         before_tab_ids = set(self._current_tab_ids())
         clicked = self._click_first_visible([
             '[data-test-id="unav-profile--sign-in"]',

@@ -219,6 +219,8 @@ class AdobeBrowserRegister:
         self._otp_callback = otp_callback
         self.log = log_fn or logger.info
         self.page = None
+        self._browser_controller = None
+        self._firefly_parent_page = None
         self._user_data_dir = ""
 
     def _delay(self, lo=0.5, hi=1.5):
@@ -722,7 +724,33 @@ class AdobeBrowserRegister:
 
     def _switch_to_existing_firefly_tab(self) -> bool:
         """Switch from a closed signup popup back to the existing Firefly parent tab."""
+        saved_parent = getattr(self, '_firefly_parent_page', None)
+        if saved_parent:
+            try:
+                parent_url = saved_parent.url or ""
+            except Exception as exc:
+                self.log(f"  [debug] 已保存的 Firefly 父页面不可用: {exc}")
+            else:
+                if parent_url.startswith("https://firefly.adobe.com"):
+                    self.page = saved_parent
+                    try:
+                        self.page.set.activate()
+                    except Exception:
+                        pass
+                    self.log(f"[Adobe] ✅ 已切回 Firefly 父页面: {parent_url}")
+                    return True
+
         controller = self.page
+        try:
+            tab_ids = list(getattr(controller, 'tab_ids', []) or [])
+        except Exception as exc:
+            self.log(f"  [debug] 当前注册窗口无法读取标签页列表，尝试使用浏览器控制器: {exc}")
+            try:
+                controller = getattr(self.page, 'browser', None) or self._browser_controller or self.page
+            except Exception as browser_exc:
+                self.log(f"  [debug] 当前注册窗口无法读取 browser 引用，改用已保存控制器: {browser_exc}")
+                controller = self._browser_controller or self.page
+
         try:
             tab_ids = list(getattr(controller, 'tab_ids', []) or [])
         except Exception as exc:
@@ -794,6 +822,7 @@ class AdobeBrowserRegister:
                 if attempt == 2:
                     raise
                 time.sleep(2)
+        self._browser_controller = self.page
         
         try:
             self.page.run_js(STEALTH_JS)
@@ -941,7 +970,7 @@ class AdobeBrowserRegister:
                     self.log(f"⚠️ 注册窗口连接已断开，尝试切回 Firefly 父页面: {exc}")
                     if self._switch_to_existing_firefly_tab():
                         break
-                    raise
+                    raise RuntimeError(f"注册窗口已关闭，但无法切回 Firefly 父页面: {exc}") from exc
 
                 if cur_url.startswith("https://firefly.adobe.com"):
                     self.log("[Adobe] ✅ 原生跳转抵达 Firefly 主页！")
@@ -973,6 +1002,7 @@ class AdobeBrowserRegister:
 
         except Exception as e:
             self.log(f"⚠️ 耐心等待重定向环节发生异常: {e}")
+            raise
 
     def _extract_and_push_cookies(self, email: str) -> str:
         # ============ 6. Firefly OAuth 授权 + 全域 Cookie 提取 ============
